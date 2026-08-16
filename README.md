@@ -104,7 +104,7 @@ Required:
 - Node.js 20+
 - Git
 - `tunnel-client` from OpenAI
-- A ChatGPT workspace that can enable Developer Mode/custom MCP apps
+- An eligible ChatGPT web account with Developer Mode available (managed workspaces may require an admin grant)
 - An OpenAI Platform organization with tunnel permissions and a runtime API key
 
 Recommended/optional:
@@ -218,18 +218,20 @@ Leave both `npm start` and `tunnel-client run` running, or install the user serv
 
 ### 4. Attach ChatGPT
 
-1. ChatGPT → **Settings → Apps/Connectors → Advanced Settings → Developer Mode**.
-2. Open <https://chatgpt.com/plugins> or <https://chatgpt.com/#settings/Connectors>.
-3. Create a developer-mode app.
+1. Use ChatGPT on the web, then open **Settings → Security and login** and enable **Developer mode**.
+2. Open <https://chatgpt.com/plugins>.
+3. Select the **+** button and create a developer-mode app. The button creates developer apps only after Developer Mode is enabled.
 4. Choose **Connection = Tunnel** and select/paste your `tunnel_...` ID.
 5. Verify that the scan returns all 44 tools.
-6. Start a new chat with the app enabled and ask:
+6. Start a new chat, choose **Developer mode** from the composer's **+** menu, enable the app, and ask:
 
 > Call `bridge_instructions`, then `workspace_list`. Open my project, show `workspace_snapshot`, and do not modify anything.
 
 Then test a reversible development loop:
 
 > Create a scratch file, run its test, show `git_diff`, and do not delete anything.
+
+If **Developer mode** is absent, confirm that you are using ChatGPT web rather than mobile/desktop, that the intended account/workspace is selected, and—on a managed workspace—that its admin has granted Developer Mode access.
 
 ---
 
