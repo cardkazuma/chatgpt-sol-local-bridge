@@ -95,7 +95,7 @@ test("destructive command requires an exact single-use confirmation token", asyn
   const command = process.platform === "win32" ? `del /q "${victim}"` : `rm -f '${victim}'`;
   const blocked = await call("shell", { command, cwd: root });
   const blockedText = assertError(blocked, /DELETE BLOCKED/);
-  assert.match(blockedText, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.ok(blockedText.includes(JSON.stringify(root).slice(1, -1)), "canonical cwd should appear in the JSON preview");
   assert.equal(fs.existsSync(victim), true);
   const token = blockedText.match(/Token:\s*(del_[A-Za-z0-9_-]+)/)?.[1];
   assert.ok(token);

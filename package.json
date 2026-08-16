@@ -18,9 +18,9 @@
     "dev": "node --watch src/server.js",
     "doctor": "node src/doctor.js",
     "smoke": "node scripts/smoke.mjs",
-    "test": "node --test --test-reporter=spec tests/**/*.test.js",
-    "test:unit": "node --test --test-reporter=spec tests/unit/**/*.test.js",
-    "test:integration": "node --test --test-reporter=spec tests/integration/**/*.test.js",
+    "test": "node scripts/run-tests.mjs",
+    "test:unit": "node scripts/run-tests.mjs unit",
+    "test:integration": "node scripts/run-tests.mjs integration",
     "lint": "eslint .",
     "check": "npm run lint && npm test",
     "prepublishOnly": "npm run check"

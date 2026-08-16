@@ -88,9 +88,10 @@ export function registerFiles(server) {
         });
         return fail(denyDeleteMessage(pending));
       }
-      const check = await runCommand(["git", "apply", "--check", "--whitespace=nowarn", "-"], { cwd: root, shell: false, stdin: diff, signal: extra?.signal });
+      const gitApply = ["git", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "apply"];
+      const check = await runCommand([...gitApply, "--check", "--whitespace=nowarn", "-"], { cwd: root, shell: false, stdin: diff, signal: extra?.signal });
       if (!check.ok) return fail(check.stderr || check.stdout || "git apply --check failed");
-      const result = await runCommand(["git", "apply", "--whitespace=nowarn", "-"], { cwd: root, shell: false, stdin: diff, signal: extra?.signal });
+      const result = await runCommand([...gitApply, "--whitespace=nowarn", "-"], { cwd: root, shell: false, stdin: diff, signal: extra?.signal });
       return result.ok ? ok(result.stdout || `applied patch in ${root}`) : fail(result.stderr || result.stdout || "git apply failed");
     } catch (error) {
       return fail(error.message);
