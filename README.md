@@ -216,22 +216,25 @@ tunnel-client run --profile sol-local-bridge
 
 Leave both `npm start` and `tunnel-client run` running, use `npm run start:all` to start them in dependency order, or install the user services below. The tunnel wrapper waits for `/readyz` before launching `tunnel-client`, avoiding a cold-start probe race. If `HOST`/`PORT` changes, rerun tunnel profile initialization so its `--mcp-server-url` stays in sync. Service status also checks tunnel readiness at `http://127.0.0.1:8766/readyz`.
 
-### 4. Attach ChatGPT
+### 4. Attach ChatGPT on the website or desktop app
 
-1. Use ChatGPT on the web, then open **Settings → Security and login** and enable **Developer mode**.
-2. Open <https://chatgpt.com/plugins>.
-3. Select the **+** button and create a developer-mode app. The button creates developer apps only after Developer Mode is enabled.
-4. Choose **Connection = Tunnel** and select/paste your `tunnel_...` ID.
-5. Verify that the scan returns all 44 tools.
-6. Start a new chat, choose **Developer mode** from the composer's **+** menu, enable the app, and ask:
+See **[ChatGPT website and desktop setup](docs/CHATGPT_SETUP.md)** for the complete, current walkthrough and troubleshooting guide.
 
-> Call `bridge_instructions`, then `workspace_list`. Open my project, show `workspace_snapshot`, and do not modify anything.
+#### ChatGPT website
 
-Then test a reversible development loop:
+1. On ChatGPT web, open **Settings → Security and login** and enable **Developer mode**.
+2. Open <https://chatgpt.com/plugins>, select **+**, and create a developer-mode connection.
+3. Choose **Connection = Tunnel**, select/paste your `tunnel_...` ID, and choose **No Authentication**.
+4. Verify that discovery returns exactly 44 tools.
+5. In a new conversation, choose **Developer mode** from the composer's **+** menu, enable the app, and ask:
 
-> Create a scratch file, run its test, show `git_diff`, and do not delete anything.
+> Use SOL Local Bridge only. Call `bridge_instructions`, then `workspace_list`, then `workspace_snapshot`. Do not modify anything.
 
-If **Developer mode** is absent, confirm that you are using ChatGPT web rather than mobile/desktop, that the intended account/workspace is selected, and—on a managed workspace—that its admin has granted Developer Mode access.
+#### ChatGPT desktop app
+
+OpenAI currently registers custom MCP connections on the website first. Sign into the desktop app with the same account/workspace and check its Plugins/Developer Mode picker. If the connection does not appear directly, copy its `plugin_asdk_app_...` technical ID from the website URL and use `@plugin-creator` in desktop **Work mode** to package it with a personal marketplace entry. Restart the desktop app, install it from the Plugins Directory, and test it in a new conversation. The detailed guide explains each step and the difference between `tunnel_...` and `plugin_asdk_app_...` IDs.
+
+If **Developer mode** is absent on the website, confirm account/workspace eligibility and—on a managed workspace—ask its admin for access. If Work mode or the Plugins Directory is absent from the desktop app, update it; if the surface remains unavailable for that account/build, use the website integration.
 
 ---
 
@@ -396,6 +399,10 @@ src/
   lib/                   policy, paths, process, audit, Office, fetch
   platform/              macOS/Linux/Windows adapters
   tools/                 seven tool-family modules
+docs/
+  CHATGPT_SETUP.md       website + desktop app connection guide
+  SECURITY.md            trust boundaries and hardening
+  OPERATIONS.md          service and incident runbook
 scripts/
   connect-chatgpt.sh     Unix tunnel setup wizard
   service-macos.sh       LaunchAgent lifecycle
@@ -416,7 +423,9 @@ examples/python-minimal/  original small FastMCP teaching example
 
 ## References
 
+- [ChatGPT Developer Mode](https://developers.openai.com/api/docs/guides/developer-mode)
 - [OpenAI Secure MCP Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
+- [Package plugins for ChatGPT desktop/Codex](https://developers.openai.com/plugins/build/plugins)
 - [openai/tunnel-client](https://github.com/openai/tunnel-client)
 - [OpenAI private MCP server announcement](https://developers.openai.com/blog/connect-private-mcp-servers-to-openai-products)
 - [Model Context Protocol](https://modelcontextprotocol.io/)
