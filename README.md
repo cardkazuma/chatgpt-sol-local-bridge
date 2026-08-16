@@ -1,332 +1,424 @@
 # chatgpt-sol-local-bridge
 
-**Drive your development workstation from ChatGPT (web, desktop, or mobile) using GPT-5.6 Sol as the orchestration brain — with your local filesystem, git, tests, dev servers, and browser exposed as private MCP tools over OpenAI's Secure MCP Tunnel.**
+A production-grade, cross-platform implementation of the original **ChatGPT Web → OpenAI Secure MCP Tunnel → local workstation** workflow.
 
-Your machine keeps **zero open inbound ports**. ChatGPT reaches your tools through a client you run, which connects **outbound-only** to OpenAI, pulls queued MCP work, executes it locally, and returns the result.
+It exposes the same **44 MCP tools** as the full macOS reference implementation while supporting macOS, Linux, and Windows through platform adapters. ChatGPT can read and edit projects, run git/tests/builds, supervise processes, drive browsers and native applications, work with Office files, and optionally delegate to local Codex.
 
----
-
-## Table of Contents
-
-1. [Why This Approach Exists](#1-why-this-approach-exists-the-rationale)
-2. [What It Is and What It's For](#2-what-it-is-and-what-its-for)
-3. [Setup Guide](#3-setup-guide)
-4. [The No-Delete Safety Policy](#4-the-no-delete-safety-policy)
-5. [Reference Tool Surface](#5-reference-tool-surface)
-6. [Honest Limits & Cost Model](#6-honest-limits--cost-model)
-7. [Troubleshooting](#7-troubleshooting)
-8. [References](#8-references)
-
----
-
-## 1. Why This Approach Exists (The Rationale)
-
-Modern ChatGPT plans (Plus / Pro / Business) include two **separately metered** usage pools:
-
-| Pool | What draws from it |
-|---|---|
-| **ChatGPT messages** | Conversations in ChatGPT web / desktop / mobile — including tool calls to connected MCP apps |
-| **Codex usage** | Codex CLI, Codex IDE extension, Codex cloud tasks (weekly + 5-hour windows) |
-
-This separation is **documented product design, not a bug or an exploit**. It leads to a practical consequence:
-
-> If the *orchestrating model* runs inside ChatGPT (e.g. **GPT-5.6 Sol with High reasoning**), and the *work* is executed by local tools over the Secure MCP Tunnel, the orchestration consumes your ChatGPT message allowance — **your Codex weekly quota stays untouched** for when you genuinely need Codex CLI / cloud tasks.
-
-Why you would actually want this in daily work:
-
-- **🕹️ Delegate from anywhere.** Start a task from your phone on the train; the agent edits code, runs tests, and drives the browser on your workstation at home. Typing chat commands is enough — you are not the execution bottleneck anymore.
-- **💸 No API billing.** The brain is your existing ChatGPT subscription. Tunnel transport carries no per-token API charges.
-- **🔒 Security teams can sign off.** Outbound-only HTTPS to `api.openai.com:443`. No public endpoint, no inbound firewall rule, no VPN change, no third-party connectivity vendor.
-- **🧠 A model you don't pay twice for.** "Sol High" (GPT-5.6 Sol, High reasoning effort) handles architecture-level reasoning; the *machine* supplies ground truth (files, git state, test output, screenshots) instead of the model hallucinating it.
-- **🔀 Composable.** The same tunnel is reachable from ChatGPT, Codex, and the Responses API — one private tool server, multiple OpenAI surfaces.
-- **🧯 Blast radius is your policy.** The MCP server — code *you* own and run — decides what is allowed. This repo ships a strict default: **create / update / edit, never delete** (see [§4](#4-the-no-delete-safety-policy)).
+The local MCP endpoint binds to loopback by default. Tunnel connectivity is initiated outbound by `tunnel-client` over HTTPS—no public port or inbound firewall rule is required. Invoked tools such as `web_fetch`, browsers, package managers, project scripts, Codex, and tests may make their own outbound connections.
 
 > [!IMPORTANT]
-> **This is not "unlimited free compute."** ChatGPT messages have their own plan limits, and heavier reasoning efforts consume them faster (Ultra burns the fastest). Delegating to a local `codex_run` tool consumes the Codex pool like any Codex CLI run. Honest numbers live in [§6](#6-honest-limits--cost-model).
+> This bridge gives an AI agent the authority of the local user running it. The no-delete layer is a strong policy seatbelt with exact, expiring approval tokens; it is **not an OS sandbox**. For sensitive work, use a dedicated OS account, VM/container, filesystem snapshots, limited workspace roots, and—when available—an independent external approval verifier.
 
 ---
 
-## 2. What It Is and What It's For
+## Why this exists
 
-### Architecture
+ChatGPT can reason about a bug, but without tools a human still has to copy patches, run commands, paste logs, switch to a browser, and report results. This bridge closes that execution loop while keeping the workstation private:
 
+- Operate a development machine from ChatGPT Web—including from another device.
+- Reuse the ChatGPT product surface as the orchestrator while keeping local Codex optional.
+- Avoid public tunnel URLs and inbound network exposure.
+- Keep tool authority, workspace roots, output limits, and destructive approvals under code you control.
+- Preserve the original rule: **create/update/edit are allowed; delete/reset/quit must be previewed and confirmed first**.
+
+ChatGPT and Codex limits/billing are product- and plan-dependent and can change. `codex_run` always uses the local Codex CLI and therefore consumes the Codex usage pool associated with that CLI authentication.
+
+## Architecture
+
+```text
+ChatGPT Web / desktop browser
+           │
+           ▼
+OpenAI-hosted Secure MCP Tunnel endpoint
+           ▲
+           │ outbound HTTPS :443 only
+           │
+     tunnel-client (local)
+           │ loopback HTTP
+           ▼
+ http://127.0.0.1:8765/mcp
+ chatgpt-sol-local-bridge
+           │
+ ┌─────────┼─────────────┬──────────────┐
+ │         │             │              │
+files/git  processes   browser/CDP   OS adapter
+projects   Codex CLI   Penpot web    macOS/Linux/Windows
 ```
-┌──────────────────────┐   HTTPS    ┌─────────────────────────┐
-│  ChatGPT web/desktop │◄──────────►│   OpenAI-hosted tunnel  │
-│  /mobile app         │            │   endpoint (control +   │
-│                      │            │   work queue)           │
-│  Brain: GPT-5.6 Sol  │            └───────────▲─────────────┘
-│  (High reasoning)    │                        │ outbound long-poll
-└──────────────────────┘                        │ (HTTPS :443 only)
-                                     ┌──────────┴──────────────┐
-                                     │  tunnel-client          │
-                                     │  (runs on YOUR machine, │
-                                     │  no inbound ports)      │
-                                     └──────────┬──────────────┘
-                                                │ stdio / loopback HTTP
-                                     ┌──────────▼──────────────┐
-                                     │  local MCP server       │
-                                     │  (YOUR code, YOUR rules)│
-                                     │                         │
-                                     │  • workspace_*  git_*   │
-                                     │  • read_file  apply_patch│
-                                     │  • test / lint / build  │
-                                     │  • process_*  shell     │
-                                     │  • dom_cdp (browser)    │
-                                     │  • codex_run (optional) │
-                                     │  • system_info  vision  │
-                                     └─────────────────────────┘
-```
 
-### Components
+The bridge and tunnel are separate processes so they can be tested, restarted, logged, and supervised independently.
 
-| Component | Where it runs | What it does |
-|---|---|---|
-| **ChatGPT** (Developer Mode app) | OpenAI/cloud | The conversational brain. You chat; it plans and calls tools. |
-| **Secure MCP Tunnel endpoint** | OpenAI-hosted | Holds the queue of MCP requests for your tunnel identity. Created in Platform settings. |
-| **`tunnel-client`** | Your machine | Open-source agent that authenticates to OpenAI with an API key, long-polls for work, forwards JSON-RPC to your MCP server, posts responses back. |
-| **Local MCP server** | Your machine | Your tool implementations and — critically — your **authorization policy**. This is the only component with filesystem/shell access. |
-| **Local Codex CLI** *(optional)* | Your machine | A `codex_run` tool lets ChatGPT hand off heavy implementation to Codex CLI (`codex exec`). Costs Codex pool — see [§6](#6-honest-limits--cost-model). |
+## Exact 44-tool contract
 
-### Purpose
+The tool names are frozen and contract-tested:
 
-- Turn any workstation (desktop at the office, Mac mini at home, cloud VM) into a **remotely operable development agent** reachable from a chat box.
-- Give non-local collaborators a controlled way to run *reversible* operations (edit, build, test, inspect) on a machine they don't have SSH access to.
-- Keep **all code and data on-prem**: only tool descriptions, arguments, and results traverse OpenAI.
-
----
-
-## 3. Setup Guide
-
-### 3.1 Prerequisites
-
-| Requirement | Details |
+| Family | Tools |
 |---|---|
-| ChatGPT plan | Plus / Pro / Business / Enterprise with **Developer Mode** available |
-| Platform permissions | Tunnel permissions are **org-level**, granted by an org owner / RBAC admin: **Read + Manage** to create the tunnel, **Read + Use** on the key that runs `tunnel-client`. ⚠️ New role grants can take **up to 30 minutes** to propagate. |
-| ChatGPT Developer Mode | A **separate grant** from Platform roles. On Enterprise/Edu a workspace admin must enable it; then the user switches it on in **Settings → Security and login**. Having one grant gives you neither the other — this double-approval is the #1 setup blocker. |
-| Runtime API key | Platform API key scoped with Tunnels **Read + Use** |
-| Local toolchain | Python 3.11+ (for the reference server) or any MCP SDK; `git`; optional `codex` CLI v0.147+ logged in via `codex login` (ChatGPT auth) |
+| Policy | `bridge_instructions`, `confirm_destructive`, `pending_destructive`, `penpot_status` |
+| Workspace | `workspace_list`, `workspace_open`, `workspace_add_root`, `workspace_tree`, `workspace_snapshot` |
+| Files | `read_file`, `search_text`, `write_file`, `apply_patch`, `edit_file` |
+| Git | `git_status`, `git_diff`, `git_log`, `git_run` |
+| Project | `project_test`, `project_lint`, `project_typecheck`, `project_build`, `project_dev` |
+| Process/system | `shell`, `process_start`, `process_list`, `process_logs`, `process_stop`, `codex_run`, `health`, `system_info` |
+| Desktop/network/docs | `dom_cdp`, `accessibility`, `input_event`, `vision`, `window`, `clipboard`, `notification`, `file_dialog`, `screen_record`, `audio`, `scheduler`, `web_fetch`, `office` |
 
-### 3.2 Install `tunnel-client`
+`project_*` uses documented heuristics for Node/npm/pnpm/yarn/bun, Python/uv, Rust/Cargo, and Go projects; an explicit `command` override remains available. It does not implicitly download TypeScript. `office` reads and writes DOCX/XLSX cross-platform using document libraries rather than requiring Microsoft Office.
 
-**macOS / Linux (Homebrew):**
+## Platform support
+
+| Capability | macOS | Linux | Windows |
+|---|---|---|---|
+| Files/git/project/process/Codex | Native | Native | Native |
+| Browser `dom_cdp` | `interceptor` | `interceptor` | `interceptor` |
+| Native accessibility/input/window | `interceptor macos` | `xdotool`/`wmctrl` (X11; compositor-dependent on Wayland) | PowerShell + Windows UI Automation/Win32 |
+| Screenshot/OCR | interceptor or `screencapture`; Tesseract | grim/gnome-screenshot/scrot + Tesseract | System.Drawing + Tesseract |
+| Clipboard/dialog/notification | native macOS | wl-clipboard/xclip, zenity/kdialog, notify-send | PowerShell/WinForms |
+| Screen/audio | ffmpeg + avfoundation/afplay | ffmpeg + X11/PulseAudio | ffmpeg gdigrab/dshow/ffplay |
+| Scheduler | launchd | systemd user timers | Windows Task Scheduler |
+| Always-on user service | LaunchAgent | systemd `--user` | per-user Scheduled Tasks |
+
+Every tool is registered on every OS. If an optional backend is missing, the tool returns a clear capability-unavailable error and `npm run doctor` reports the dependency.
+
+Wayland intentionally prevents some global input/window operations. Exact support depends on the compositor and portal permissions; this cannot be bypassed safely by an application.
+
+Optional backend examples:
 
 ```bash
+# macOS
+brew install ripgrep ffmpeg tesseract
+ffmpeg -f avfoundation -list_devices true -i ""  # discover capture devices
+
+# Ubuntu/Debian X11 (choose Wayland equivalents where appropriate)
+sudo apt install ripgrep ffmpeg tesseract-ocr xdotool wmctrl wl-clipboard xclip zenity libnotify-bin scrot
+```
+
+On Windows, install Node/Git/tunnel-client and place optional `interceptor`, ffmpeg, Tesseract, and Codex executables on PATH before service installation. Discover DirectShow devices with `ffmpeg -list_devices true -f dshow -i dummy`. Linux screen recording currently uses X11 (`DISPLAY` and optional `SCREEN_SIZE`); Wayland screenshots can use `grim`, but recording depends on compositor/portal support.
+
+---
+
+## Quick start: local server
+
+### 1. Requirements
+
+Required:
+
+- Node.js 20+
+- Git
+- `tunnel-client` from OpenAI
+- A ChatGPT workspace that can enable Developer Mode/custom MCP apps
+- An OpenAI Platform organization with tunnel permissions and a runtime API key
+
+Recommended/optional:
+
+```bash
+# macOS examples
 brew install openai/tools/tunnel-client
+brew install ripgrep ffmpeg tesseract
+# interceptor and codex are optional integrations
 ```
 
-**Windows / other:** download the latest release binary from
-<https://github.com/openai/tunnel-client/releases>
+Windows users should install the current `tunnel-client` release from [openai/tunnel-client](https://github.com/openai/tunnel-client/releases).
 
-Sanity check:
+### 2. Install
 
 ```bash
-tunnel-client help quickstart
+git clone https://github.com/mingrath/chatgpt-sol-local-bridge.git
+cd chatgpt-sol-local-bridge
+npm ci
+cp .env.example .env
 ```
 
-### 3.3 Create the tunnel endpoint (one-time, in Platform settings)
+Edit `.env` and grant only the directories ChatGPT actually needs:
 
-1. Open <https://platform.openai.com/settings/organization/tunnels> with the **correct organization** selected in the top-left switcher.
-2. **Create tunnel** → note the `tunnel_id` (looks like `tunnel_0123...`).
-3. **Associate the tunnel** with:
-   - the Platform organization that owns it, **and**
-   - the **ChatGPT workspace** that should see it, **and**
-   - any organization Codex / Responses API will call from.
-   A tunnel linked only to a *personal* organization will **not** appear in an Enterprise/Edu workspace — this is the #2 setup blocker.
-4. Create a runtime API key with Tunnels **Read + Use** and export it:
+```dotenv
+HOST=127.0.0.1
+PORT=8765
+WORKSPACE_ROOTS=/Users/you/projects
+DEFAULT_WORKSPACE=/Users/you/projects
+ALLOW_TOOL_ROOT_REGISTRATION=false
+INCLUDE_COMMON_WORKSPACE_ROOTS=false
+DESTRUCTIVE_APPROVAL_MODE=chat
+```
+
+On Windows, separate multiple roots with `;`. On macOS/Linux, use `:`.
+
+Workspace roots constrain the structured file/Office tools and command working directories; they are not a filesystem sandbox for absolute paths used inside `shell`, project scripts, browser tools, or Codex. `workspace_add_root` exists for contract compatibility but is disabled by default because allowing the model to expand its own filesystem authority is unsafe. No Desktop/Documents/home-directory roots are implicit unless `INCLUDE_COMMON_WORKSPACE_ROOTS=true`. Add roots to `.env`, or explicitly opt into broader authority only if you accept that risk. `DEFAULT_WORKSPACE` accepts exactly one directory, not a delimiter-separated list.
+
+### 3. Diagnose, start, and smoke-test
+
+```bash
+npm run doctor
+npm start
+```
+
+In another terminal:
+
+```bash
+npm run smoke
+```
+
+Expected result: exactly 44 tools, a write/read/edit round trip in a unique directory under `BRIDGE_SCRATCH_DIR`, a blocked destructive command, and a successful single-use confirmation.
+
+Health endpoints:
+
+```bash
+curl http://127.0.0.1:8765/healthz
+curl http://127.0.0.1:8765/readyz
+```
+
+---
+
+## Connect through OpenAI Secure MCP Tunnel
+
+### 1. Create the OpenAI resources
+
+1. Create a tunnel at <https://platform.openai.com/settings/organization/tunnels>.
+2. Associate it with the ChatGPT workspace that should discover it.
+3. Create a runtime API key at <https://platform.openai.com/settings/organization/api-keys> with Tunnels **Read + Use**.
+4. Enable ChatGPT Developer Mode/custom apps in the target workspace.
+
+Platform tunnel roles and ChatGPT workspace Developer Mode are separate permissions.
+
+### 2. Guided configuration
+
+macOS/Linux:
+
+```bash
+./scripts/connect-chatgpt.sh
+```
+
+Windows PowerShell:
+
+```powershell
+.\scripts\windows\configure-tunnel.ps1
+```
+
+The wizard seeds a user-only `runtime.env` from the repository `.env` (intentionally omitting `MCP_TOKEN` because the documented tunnel profile uses `sample_mcp_remote_no_auth`), prompts separately for workspace roots/default workspace, initializes the profile from the configured MCP endpoint, and runs `tunnel-client doctor`. API keys are not embedded in service descriptors or process arguments. For persistent services, `runtime.env` is authoritative—edit it rather than `.env`, then restart the affected service.
+
+Default runtime config locations:
+
+- macOS/Linux: `~/.config/chatgpt-sol-local-bridge/runtime.env` (`0600`)
+- Windows: `%APPDATA%\chatgpt-sol-local-bridge\runtime.env` (user-only ACL)
+
+### 3. Equivalent manual commands
 
 ```bash
 export CONTROL_PLANE_API_KEY="sk-..."
-```
-
-### 3.4 Run the local MCP server (this repo's reference implementation)
-
-```bash
-git clone <this-repo> && cd chatgpt-sol-local-bridge
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r examples/requirements.txt
-
-# Point it at the workspace it's allowed to touch:
-export BRIDGE_WORKSPACE_ROOT="$HOME/projects"
-
-# stdio mode (recommended — tunnel-client spawns it as a child process):
-python examples/server.py
-```
-
-The server enforces the **no-delete policy** and confines all file access to `BRIDGE_WORKSPACE_ROOT`. See [§4](#4-the-no-delete-safety-policy).
-
-### 3.5 Register the profile and validate
-
-**stdio server** (client spawns it for you):
-
-```bash
 tunnel-client init \
-  --sample sample_mcp_stdio_local \
-  --profile local-bridge \
-  --tunnel-id tunnel_0123... \
-  --mcp-command "/abs/path/to/.venv/bin/python /abs/path/to/examples/server.py"
+  --sample sample_mcp_remote_no_auth \
+  --profile sol-local-bridge \
+  --tunnel-id tunnel_0123456789abcdef0123456789abcdef \
+  --health-listen-addr 127.0.0.1:8766 \
+  --mcp-server-url http://127.0.0.1:8765/mcp
+
+tunnel-client doctor --profile sol-local-bridge --explain
+tunnel-client run --profile sol-local-bridge
 ```
 
-**HTTP server** (you run it yourself on loopback):
+Leave both `npm start` and `tunnel-client run` running, or install the user services below. If `HOST`/`PORT` changes, rerun tunnel profile initialization so its `--mcp-server-url` stays in sync. Service status also checks tunnel readiness at `http://127.0.0.1:8766/readyz`.
+
+### 4. Attach ChatGPT
+
+1. ChatGPT → **Settings → Apps/Connectors → Advanced Settings → Developer Mode**.
+2. Open <https://chatgpt.com/plugins> or <https://chatgpt.com/#settings/Connectors>.
+3. Create a developer-mode app.
+4. Choose **Connection = Tunnel** and select/paste your `tunnel_...` ID.
+5. Verify that the scan returns all 44 tools.
+6. Start a new chat with the app enabled and ask:
+
+> Call `bridge_instructions`, then `workspace_list`. Open my project, show `workspace_snapshot`, and do not modify anything.
+
+Then test a reversible development loop:
+
+> Create a scratch file, run its test, show `git_diff`, and do not delete anything.
+
+---
+
+## Run persistently
+
+Desktop automation must run in the logged-in user's session. Do not run it as a macOS LaunchDaemon, Windows Session-0 service, or headless system service if you expect UI control.
+
+### macOS LaunchAgents
 
 ```bash
-tunnel-client init \
-  --profile local-bridge-http \
-  --tunnel-id tunnel_0123... \
-  --mcp-server-url "http://127.0.0.1:8000/mcp"
+./scripts/service-macos.sh install
+./scripts/service-macos.sh status
+./scripts/service-macos.sh logs
+# restart / stop / start / uninstall are also supported
 ```
 
-Validate, then run:
+Two LaunchAgents are installed: one for the MCP server and one for `tunnel-client`. The plist files contain only paths—not secrets.
+
+### Linux systemd user services
 
 ```bash
-tunnel-client doctor --profile local-bridge --explain   # tells you *why* each check passes/fails
-tunnel-client run    --profile local-bridge             # keep this alive while you test
+./scripts/service-linux.sh install
+./scripts/service-linux.sh status
+./scripts/service-linux.sh logs
 ```
 
-`--explain` is your friend — it prints the reason behind every doctor check. Health, readiness and metrics live at `/healthz`, `/readyz`, `/metrics`, with a **loopback-only** admin UI at `/ui`.
+For an interactive desktop, keep these as user services. A dedicated system user is appropriate only for headless file/git/build workflows. User services normally follow the user's login session; intentional headless persistence may require `loginctl enable-linger <user>` and is not universally available in containers, minimal distributions, or WSL.
 
-### 3.6 Connect ChatGPT to the tunnel
+### Windows Scheduled Tasks
 
-1. In ChatGPT, enable **Developer Mode** (Settings → Security and login, if not already granted by your admin).
-2. Go to **Settings → Plugins** (or <https://chatgpt.com/plugins>) → **＋ create app**.
-3. Under **Connection**, choose **Tunnel**.
-4. Pick your tunnel from the list — or paste the `tunnel_id` directly.
-5. Save; ChatGPT discovers the tools from your running MCP server. (If the client isn't polling, discovery looks like a broken connector rather than a stopped process — check `tunnel-client run`.)
+```powershell
+.\scripts\windows\service.ps1 install
+.\scripts\windows\service.ps1 status
+.\scripts\windows\service.ps1 logs
+```
 
-### 3.7 Smoke test
+Tasks run at user logon with limited privileges and `MultipleInstances=IgnoreNew`. They do not request highest privileges.
 
-In the ChatGPT conversation with the app enabled:
+---
 
-- Model picker → **5.6 Sol**, effort → **High**.
-- Prompt:
+## Delete/rollback approval model
 
-  > Use `system_info` to report the host, then `workspace_list` to show what's in the workspace root. Do not modify anything.
+The following are intercepted before execution at the structured file/command/network layer:
 
-Then a write-path test in a scratch project:
+- Unix/Windows/PowerShell file deletion and truncation
+- `git clean`, `reset --hard`, restore/checkout discard, branch deletion, force push
+- SQL drop/truncate/delete
+- destructive Docker/Podman prune and `kubectl delete`
+- patch-based file deletion
+- HTTP `DELETE`
+- native window close/quit/kill
 
-  > In project `scratch`, create `hello.py` printing "pong", run it with `shell`, and show me `git_status`.
+A blocked operation returns:
 
-Verify the guardrail:
+```text
+DELETE BLOCKED — no destructive command was executed.
+Token: del_...
+Expires: ...
+Preview: ...
+```
 
-  > Delete `hello.py`.
+The code-level default is `deny` (no destructive execution). The supplied `.env.example` and guided setup explicitly select `chat` to reproduce the original workflow. In `chat` mode, after the human explicitly confirms the exact preview, ChatGPT calls:
 
-Expected: refusal — the tool surface has no delete operation, and `shell` rejects destructive commands. ✅ Bridge verified.
+```text
+confirm_destructive(token=<same token>, userSaidYes=true)
+```
 
-### 3.8 (Optional) Wire in the Codex CLI relay
+Tokens are bound to the exact canonical operation, stored atomically, expire after ten minutes by default, and are single-use. `chat` mode relies on the MCP caller honestly representing the human's reply; it is a review workflow, not independent proof against a malicious/prompt-injected caller.
 
-To let ChatGPT delegate heavy lifting to the local Codex installation:
+For independently enforced approval, configure a read-only verifier backed by a separate human-controlled channel/account:
+
+```dotenv
+DESTRUCTIVE_APPROVAL_MODE=external
+APPROVAL_VERIFIER_COMMAND=/absolute/path/to/read-only-approval-verifier
+APPROVAL_VERIFIER_SHA256=<pinned sha256 of that executable>
+```
+
+At confirmation time the bridge executes:
+
+```text
+<verifier> verify <token> <operation-fingerprint>
+```
+
+The verifier must only report whether a separate human approval already exists; it must not let the bridge's shell create that approval. A same-user file or local CLI is not independent because the unrestricted shell tool could invoke it itself.
+
+Browser/native UI tools are marked `destructiveHint=true`, and obvious Delete/Trash/Close actions are token-gated, but coordinate clicks, JavaScript evaluation, and keyboard input cannot be semantically proven non-destructive. Likewise, no generic regex can make unrestricted shell access mathematically unable to delete data—for example, an interpreter can implement deletion indirectly. Use OS isolation/snapshots when that guarantee matters. See [`docs/SECURITY.md`](docs/SECURITY.md).
+
+---
+
+## Security defaults
+
+- Loopback-only bind is enforced. Non-loopback operation is intentionally refused; any external TLS/auth proxy requires a separate security design and keeps the bridge itself on loopback.
+- Host-header validation against DNS rebinding.
+- Optional bearer authentication with timing-safe comparison.
+- Explicit workspace roots; tool-driven authority expansion disabled. A dedicated `BRIDGE_SCRATCH_DIR` is the only automatic tool root.
+- Internal approvals/process metadata/audit state is never a file-tool root; realpath/symlink-aware containment and protected credential/system paths are enforced.
+- Bridge-owned process IDs only, with start-identity checks and process-tree termination.
+- Bounded request bodies, command output, fetch/Office responses, timeouts, concurrent tool calls, process-log size, record count, and retention.
+- Hash-chained, redacted audit JSONL under `~/.chatgpt-sol-local-bridge/audit/`.
+- `web_fetch` blocks private, loopback, link-local, multicast, mapped-IPv6/NAT64, and cloud-metadata ranges by default; redirects are revalidated and cross-origin redirects are rejected unless explicitly enabled (then downgraded to header-safelisted GET).
+- Runtime API keys live only in a user-owned secret file. The tunnel key is excluded from the MCP server, and secret-like environment variables are stripped from shell/project/Codex children unless explicitly allowlisted.
+
+To intentionally call local/intranet HTTP services:
+
+```dotenv
+WEB_FETCH_ALLOW_HOSTS=localhost,api.dev.internal.example
+# or, broader and riskier:
+ALLOW_PRIVATE_NETWORK=true
+```
+
+Tool arguments/results can include source code or local data and are sent through the calling OpenAI product. Do not expose a workspace whose data policy forbids that processing.
+
+---
+
+## Penpot
+
+Two supported shapes:
+
+1. Run Penpot MCP as a second local server and attach it through another Secure MCP Tunnel profile.
+2. Use `dom_cdp` to drive <https://design.penpot.app> in an already signed-in browser.
 
 ```bash
-brew install --cask codex   # or your platform's method
-codex login                 # ChatGPT auth
-codex exec --sandbox read-only --skip-git-repo-check "Reply with exactly: PONG"
+npx -y @penpot/mcp@stable
+# manifest: http://127.0.0.1:4400/manifest.json
+# MCP:      http://127.0.0.1:4401/mcp
 ```
 
-The reference server already exposes `codex_run` pointing at that binary. Remember: **every `codex_run` call spends Codex-pool quota** measured under `limit_id: codex` (visible in `~/.codex/sessions/**/rollout-*.jsonl`).
+`penpot_status` reports these endpoints; the bridge intentionally does not impersonate or proxy Penpot's own MCP tools.
 
----
+## Development and validation
 
-## 4. The No-Delete Safety Policy
-
-The house rule — **"Full access, but never delete. Adds, updates, and edits are fine. If something must be removed, ask a human first."** — is implemented in three layers:
-
-**Layer 1 — the tool surface simply has no delete operation.**
-There is no `fs_delete`, no `process_kill` on PIDs it didn't spawn, no destructive git verbs. You cannot call what does not exist.
-
-**Layer 2 — command-level denylist in `shell`.**
-Even the generic shell rejects destructive patterns before execution:
-
-```python
-DESTRUCTIVE_PATTERNS = [
-    r"\brm\b", r"\brmdir\b", r"\bunlink\b", r"\bshred\b",
-    r"\bRemove-Item\b", r"\bdel\b", r"\berase\b",
-    r"\bmkfs", r"\bdd\b", r"\bformat\b",
-    r"git\s+(reset\s+--hard|clean\b|push\s+--force|branch\s+-D)",
-    r"DROP\s+TABLE", r"TRUNCATE\s+TABLE",
-]
+```bash
+npm run lint
+npm test                 # unit + integration
+npm run test:unit
+npm run test:integration
+npm run check            # lint + all tests
+npm run doctor -- --json
+npm run doctor -- --live       # require local /readyz
+# For service configuration, load runtime.env without echoing secrets:
+node scripts/run-with-env.mjs ~/.config/chatgpt-sol-local-bridge/runtime.env -- npm run doctor -- --tunnel
 ```
 
-**Layer 3 — MCP tool annotations.**
-Every tool declares truthful hints (`readOnlyHint` / `destructiveHint`) so the ChatGPT client prompts you before consequential calls.
+The test suite covers:
 
-When something genuinely needs deleting, the human runs it locally, or you extend the policy with an out-of-band approval step. Nothing in the repo grants the agent that power by default.
+- exact 44-tool contract
+- authenticated Streamable HTTP MCP lifecycle
+- workspace and symlink escape protection
+- read/write/edit/patch round trips
+- destructive detection and one-time confirmations
+- managed-process ownership/logging/stopping
+- DOCX/XLSX round trips
+- private-network blocking
+- project command detection
 
-> [!WARNING]
-> "No-delete" is a safety *policy*, not a sandbox. For stronger containment run the server inside a container/VM, on a dedicated user account, or behind OS-level sandboxing — and never give it credentials to production systems.
+## Repository layout
 
----
+```text
+src/
+  server.js              Streamable HTTP MCP server
+  tool-contract.js       frozen exact 44-tool list
+  lib/                   policy, paths, process, audit, Office, fetch
+  platform/              macOS/Linux/Windows adapters
+  tools/                 seven tool-family modules
+scripts/
+  connect-chatgpt.sh     Unix tunnel setup wizard
+  service-macos.sh       LaunchAgent lifecycle
+  service-linux.sh       systemd-user lifecycle
+  windows/               PowerShell setup/service scripts
+  smoke.mjs              live MCP smoke test
+examples/python-minimal/  original small FastMCP teaching example
+```
 
-## 5. Reference Tool Surface
+## Operational caveats
 
-The minimal server in [`examples/server.py`](examples/server.py) implements a starter subset. A full workstation bridge typically grows toward:
+- The workstation must be awake, logged in, connected, and running both services.
+- macOS Accessibility/Screen Recording/Microphone permissions are granted to the executable actually running the bridge (Terminal/Node/interceptor).
+- Linux Wayland support varies by compositor.
+- Windows desktop automation requires an interactive user session.
+- Cross-platform DOCX/XLSX support covers document data, not Office macros, rendering fidelity, or Excel formula recalculation.
+- Attaching browser automation to a personal profile exposes that profile's signed-in sessions to the agent.
 
-| Tool family | Purpose |
-|---|---|
-| `workspace_list / workspace_open / workspace_snapshot` | Multi-project registry, structure view, cheap snapshots |
-| `read_file` / `search_text` / `apply_patch` | Read code, project-wide search, batched multi-file edits |
-| `git_status` / `git_diff` / `git_log` | Working-tree review before/after changes |
-| `project_dev` / `test` / `lint` / `typecheck` / `build` | Run the project's own scripts from chat |
-| `process_start` / `process_logs` / `process_stop`, `shell` | Real CLI execution with stdout/stderr capture and tailing |
-| `codex_run` | Delegate implement/review to local Codex CLI *(spends Codex pool)* |
-| `dom_cdp` | Drive Chrome via CDP: navigate, inspect DOM, click/type, execute JS, screenshot |
-| `vision` | Capture screen / window / region (+ OCR) |
-| `web_fetch` | HTTP requests from the machine's network identity |
-| `system_info` / `health` | CPU, RAM, disk, process, backend status |
-| `clipboard`, `notification`, `scheduler`, `screen_record`, `audio` | Desktop glue (platform-dependent) |
-| Windows-only: `accessibility`, `input_event`, `window`, `office`, `file_dialog` | UI Automation, raw input, window management, Office COM, native dialogs |
+## References
 
-Design rules that keep the bridge maintainable:
-
-- **Tools are thin.** They wrap the same commands a human would run (`git`, `pytest`, `npm test`). No magic.
-- **Everything is relative to `BRIDGE_WORKSPACE_ROOT`** and path-traversal is rejected.
-- **Output is bounded** (tail N lines) so a runaway build can't flood the conversation.
-
----
-
-## 6. Honest Limits & Cost Model
-
-This section exists so nobody oversells the setup internally:
-
-| Claim you may hear | Reality |
-|---|---|
-| "Codex quota stays at 100%" | True **only while** the brain is ChatGPT chat and you never call `codex_run`. Any Codex CLI usage (relay or direct) is metered under the Codex pool — we verified `limit_id: "codex"` in local session telemetry. |
-| "It's unlimited/free" | No. ChatGPT messages are plan-limited too, and **higher reasoning efforts burn the allowance faster** (Ultra ≫ High). The win is *pool separation and no API bill*, not infinity. |
-| "It's a quota bypass / a bug" | No. Two products, two documented rate-limit pools, one subscription. OpenAI can resize either pool at any time. |
-| "Tunnel transport is free" | Yes — the tunnel carries tool calls; you're not billed API tokens for them. |
-| "CLI/harness can do the same" | No. `codex exec`, or any CLI harness authenticated via the Codex/ChatGPT OAuth path, is metered as the **Codex** pool. The chat pool is reachable only through first-party ChatGPT surfaces (web / desktop / mobile). That's exactly why the tunnel + web UI combo exists. |
-
-**Operational limits to plan around:**
-
-- `tunnel-client run` must stay alive; a stopped client looks like a broken connector (use `systemd`, `launchd`, or a supervised process for always-on).
-- Streamed tool results are supported, but huge outputs should still be bounded.
-- Dev-mode apps are built for development; mind your workspace's data policies before pointing it at real codebases.
-
----
-
-## 7. Troubleshooting
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| "Tunnels access required" in Platform settings | Tunnel roles are **org-level**, not project-level | Org owner/RBAC admin grants Tunnels **Read** (+**Manage** to create). Wait up to 30 min for propagation. |
-| Tunnel not listed in ChatGPT | Tunnel associated with a Platform org but not the **ChatGPT workspace**; or missing Tunnels **Use** | Edit associations; Enterprise/Edu may need an account-team-assisted link. |
-| Discovery/tool calls fail | `tunnel-client` not running or not connected | `tunnel-client doctor --profile <name> --explain`; keep `run` alive. |
-| Can view tunnel, can't edit | Have **Read**, missing **Manage** | Request the role upgrade. |
-| Tool times out against big outputs | Unbounded stdout | All tools tail-limit output; raise limits deliberately, not globally. |
-
----
-
-## 8. References
-
-- OpenAI guide: [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
-- Tunnel client source & releases: [openai/tunnel-client](https://github.com/openai/tunnel-client)
-- Announcement: [Connect private MCP servers to OpenAI products](https://developers.openai.com/blog/connect-private-mcp-servers-to-openai-products)
-- Platform tunnel management: <https://platform.openai.com/settings/organization/tunnels>
-- ChatGPT apps: <https://chatgpt.com/plugins>
-- Codex CLI: `codex doctor` for local diagnostics
-
----
+- [OpenAI Secure MCP Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
+- [openai/tunnel-client](https://github.com/openai/tunnel-client)
+- [OpenAI private MCP server announcement](https://developers.openai.com/blog/connect-private-mcp-servers-to-openai-products)
+- [Model Context Protocol](https://modelcontextprotocol.io/)
 
 ## License
 
-MIT — copy it, adapt it, share it with your team. The guardrail policy is the part worth keeping.
+MIT. `tunnel-client` itself is OpenAI's separate Apache-2.0 project; it is not vendored here.

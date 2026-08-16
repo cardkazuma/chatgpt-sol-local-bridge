@@ -16,6 +16,7 @@ import re
 import shlex
 import subprocess
 import platform
+import sys
 from pathlib import Path
 
 from fastmcp import FastMCP
@@ -190,6 +191,6 @@ def web_fetch(url: str, max_chars: int = 4000) -> str:
 if __name__ == "__main__":
     if not WORKSPACE_ROOT.is_dir():
         raise SystemExit(f"BRIDGE_WORKSPACE_ROOT does not exist: {WORKSPACE_ROOT}")
-    print(f"[sol-local-bridge] workspace root: {WORKSPACE_ROOT}")
-    print(f"[sol-local-bridge] command: {shlex.join(['python', __file__])}", flush=True)
+    print(f"[sol-local-bridge] workspace root: {WORKSPACE_ROOT}", file=sys.stderr)
+    print(f"[sol-local-bridge] command: {shlex.join(['python', __file__])}", file=sys.stderr, flush=True)
     mcp.run()  # stdio transport

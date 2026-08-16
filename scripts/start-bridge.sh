@@ -1,32 +1,7 @@
-#!/bin/bash
-# Start the sol-local-bridge tunnel (stdio profile, outbound-only).
-#
-# Prereq: create ~/.config/sol-bridge/env (chmod 600) containing:
-#   CONTROL_PLANE_API_KEY=sk-...     # Platform key with Tunnels Read+Use
-#   TUNNEL_ID=tunnel_...             # from platform.openai.com .../tunnels
-#   BRIDGE_WORKSPACE_ROOT=$HOME/bridge-workspace
+#!/usr/bin/env bash
+# Foreground development runner: MCP server + tunnel-client.
 set -euo pipefail
-
-ENV_FILE="$HOME/.config/sol-bridge/env"
-PROFILE="local-bridge"
-REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SERVER="$REPO_DIR/examples/server.py"
-PY="$REPO_DIR/.venv/bin/python"
-
-[ -f "$ENV_FILE" ] || { echo "missing $ENV_FILE — see scripts/README quickstart"; exit 1; }
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-: "${CONTROL_PLANE_API_KEY:?set CONTROL_PLANE_API_KEY in $ENV_FILE}"
-: "${TUNNEL_ID:?set TUNNEL_ID in $ENV_FILE}"
-: "${BRIDGE_WORKSPACE_ROOT:=$HOME/bridge-workspace}"
-export BRIDGE_WORKSPACE_ROOT
-
-if ! tunnel-client profiles list 2>/dev/null | grep -q "^$PROFILE\b"; then
-  tunnel-client init \
-    --profile "$PROFILE" \
-    --tunnel-id "$TUNNEL_ID" \
-    --mcp-command "$PY $SERVER"
-fi
-
-tunnel-client doctor --profile "$PROFILE" --explain
-exec tunnel-client run --profile "$PROFILE"
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+export BRIDGE_ENV_FILE="${BRIDGE_ENV_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/chatgpt-sol-local-bridge/runtime.env}"
+[ -f "$BRIDGE_ENV_FILE" ] || { echo "missing $BRIDGE_ENV_FILE; run $REPO/scripts/connect-chatgpt.sh" >&2; exit 1; }
+exec node "$REPO/scripts/start-all.mjs"

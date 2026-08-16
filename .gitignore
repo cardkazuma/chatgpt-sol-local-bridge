@@ -1,4 +1,8 @@
+node_modules/
 .venv/
 __pycache__/
 *.pyc
 .env
+coverage/
+*.log
+.DS_Store
