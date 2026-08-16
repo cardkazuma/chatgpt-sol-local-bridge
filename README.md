@@ -214,7 +214,7 @@ tunnel-client doctor --profile sol-local-bridge --explain
 tunnel-client run --profile sol-local-bridge
 ```
 
-Leave both `npm start` and `tunnel-client run` running, or install the user services below. If `HOST`/`PORT` changes, rerun tunnel profile initialization so its `--mcp-server-url` stays in sync. Service status also checks tunnel readiness at `http://127.0.0.1:8766/readyz`.
+Leave both `npm start` and `tunnel-client run` running, use `npm run start:all` to start them in dependency order, or install the user services below. The tunnel wrapper waits for `/readyz` before launching `tunnel-client`, avoiding a cold-start probe race. If `HOST`/`PORT` changes, rerun tunnel profile initialization so its `--mcp-server-url` stays in sync. Service status also checks tunnel readiness at `http://127.0.0.1:8766/readyz`.
 
 ### 4. Attach ChatGPT
 

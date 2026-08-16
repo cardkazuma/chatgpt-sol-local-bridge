@@ -16,7 +16,7 @@ const serverEnv = { ...env };
 delete serverEnv.CONTROL_PLANE_API_KEY;
 const children = [
   spawn(process.execPath, [path.join(repo, "src", "server.js")], { cwd: repo, env: serverEnv, stdio: "inherit", shell: false }),
-  spawn(env.TUNNEL_CLIENT_BIN || "tunnel-client", ["run", "--profile", profile], { cwd: repo, env, stdio: "inherit", shell: false }),
+  spawn(process.execPath, [path.join(repo, "scripts", "run-tunnel.mjs"), env.TUNNEL_CLIENT_BIN || "tunnel-client"], { cwd: repo, env: { ...env, TUNNEL_PROFILE: profile }, stdio: "inherit", shell: false }),
 ];
 let closing = false;
 const shutdown = (signal = "SIGTERM") => {
