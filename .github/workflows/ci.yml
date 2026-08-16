@@ -16,8 +16,8 @@ jobs:
         node: [20, 22]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -29,7 +29,7 @@ jobs:
   scripts:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: bash -n scripts/*.sh
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
       - run: shellcheck scripts/*.sh
@@ -37,7 +37,7 @@ jobs:
   powershell-syntax:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - shell: pwsh
         run: |
           Get-ChildItem scripts/windows/*.ps1 | ForEach-Object {
