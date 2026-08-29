@@ -122,6 +122,9 @@ function required(name) {
 function validateListenTarget() {
   if (relaySocket && (relayHost || process.env.S3_RELAY_PORT)) throw new Error("choose either S3_RELAY_SOCKET or S3_RELAY_HOST/S3_RELAY_PORT");
   if (!relaySocket && !relayHost) throw new Error("S3_RELAY_SOCKET or S3_RELAY_HOST is required");
-  if (relayHost && !["127.0.0.1", "localhost"].includes(relayHost)) throw new Error("S3_RELAY_HOST must be loopback-only");
+  const internalOnly = process.env.S4_RELAY_INTERNAL === "true";
+  if (relayHost && !["127.0.0.1", "localhost"].includes(relayHost) && !(internalOnly && relayHost === "0.0.0.0")) {
+    throw new Error("S3_RELAY_HOST must be loopback-only unless S4_RELAY_INTERNAL=true permits 0.0.0.0 on an isolated container network");
+  }
   if (relayHost && (!Number.isInteger(relayPort) || relayPort < 1 || relayPort > 65535)) throw new Error("S3_RELAY_PORT must be a valid TCP port");
 }

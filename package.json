@@ -18,6 +18,7 @@
     "smoke": "node scripts/smoke.mjs",
     "s3:workspace-proof": "node scripts/s3-workspace-proof.mjs",
     "s3:transport-proof": "node scripts/s3-transport-proof.mjs",
+    "s4:real-tunnel-proof": "node scripts/s4-real-tunnel-proof.mjs",
     "test": "node scripts/run-tests.mjs",
     "test:unit": "node scripts/run-tests.mjs unit",
     "test:integration": "node scripts/run-tests.mjs integration",
