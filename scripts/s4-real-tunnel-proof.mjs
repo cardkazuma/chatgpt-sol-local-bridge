@@ -322,6 +322,7 @@ function startRelay() {
     "--mount", `type=volume,src=${volumeName},dst=/transport,readonly`,
     "--mount", `type=bind,src=${path.join(repo, "scripts", "s3-local-relay.mjs")},dst=/opt/relay.mjs,readonly`,
     "--env", "S3_BRIDGE_SOCKET=/transport/mcp.sock", "--env", "S3_RELAY_HOST=0.0.0.0", "--env", "S3_RELAY_PORT=8081", "--env", "S4_RELAY_INTERNAL=true",
+    "--env", "S3_MCP_RESOURCE_URL=http://relay:8081/mcp",
     "--env", `S3_RELAY_TOKEN=${relayToken}`, sidecarImage, "node", "/opt/relay.mjs",
   ], dockerEnv);
 }
@@ -389,6 +390,7 @@ function assertRelayBoundary(value) {
   assert.equal(transport.RW, false);
   assert.equal(mounts.some((mount) => mount.Source.includes("/workspace") || mount.Source.includes("manager")), false);
   assertNoCredentialEnv(value.Config.Env || [], { allowRelayToken: true });
+  assert((value.Config.Env || []).includes("S3_MCP_RESOURCE_URL=http://relay:8081/mcp"));
   assert((value.NetworkSettings?.Networks?.[privateNetworkName]?.Aliases || []).includes("relay"));
 }
 
