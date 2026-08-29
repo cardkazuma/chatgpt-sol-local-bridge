@@ -2,7 +2,8 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bridge-s4-credentials.XXXXXX")"
+NODE_TMP_DIR="$(node -p "require('node:os').tmpdir()")"
+TMP_DIR="$(mktemp -d "$NODE_TMP_DIR/bridge-s4-credentials.XXXXXX")"
 CREDENTIAL_FILE="$TMP_DIR/control-plane.env"
 TTY_STATE=""
 
