@@ -110,6 +110,7 @@ try {
 
   createTunnelContainer();
   assertTunnelBoundary(dockerInspect(tunnelName));
+  await waitFor(() => relayNetworkReachable(), "private relay network path");
   tunnelProcess = startProcess("docker", ["start", "-a", tunnelName], dockerEnv);
   await waitFor(() => tunnelReady(tunnelName), "real OpenAI Secure MCP Tunnel readiness", tunnelProcess, 180_000);
   tunnelReadyCount += 1;
@@ -317,7 +318,7 @@ function startRelay() {
   runDocker([
     "run", "-d", "--name", relayName, "--platform", "linux/amd64", "--user", "10001:10001", "--read-only",
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", "64", "--memory", "128m",
-    "--network", privateNetworkName, "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=32m,uid=10001,gid=10001,mode=1777",
+    "--network", privateNetworkName, "--network-alias", "relay", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=32m,uid=10001,gid=10001,mode=1777",
     "--mount", `type=volume,src=${volumeName},dst=/transport,readonly`,
     "--mount", `type=bind,src=${path.join(repo, "scripts", "s3-local-relay.mjs")},dst=/opt/relay.mjs,readonly`,
     "--env", "S3_BRIDGE_SOCKET=/transport/mcp.sock", "--env", "S3_RELAY_HOST=0.0.0.0", "--env", "S3_RELAY_PORT=8081", "--env", "S4_RELAY_INTERNAL=true",
@@ -343,7 +344,7 @@ function createTunnelContainer() {
   ], dockerEnv);
   fs.rmSync(credentialFile, { force: true });
   credentialRemoved = true;
-  runDocker(["network", "connect", "--alias", "relay", privateNetworkName, tunnelName], dockerEnv);
+  runDocker(["network", "connect", privateNetworkName, tunnelName], dockerEnv);
 }
 
 function assertBridgeBoundary(value) {
@@ -388,6 +389,7 @@ function assertRelayBoundary(value) {
   assert.equal(transport.RW, false);
   assert.equal(mounts.some((mount) => mount.Source.includes("/workspace") || mount.Source.includes("manager")), false);
   assertNoCredentialEnv(value.Config.Env || [], { allowRelayToken: true });
+  assert((value.NetworkSettings?.Networks?.[privateNetworkName]?.Aliases || []).includes("relay"));
 }
 
 function assertTunnelBoundary(value) {
@@ -402,6 +404,7 @@ function assertTunnelBoundary(value) {
   assert((value.Config.Env || []).some((entry) => entry.startsWith("CONTROL_PLANE_API_KEY=")));
   assert((value.Config.Env || []).some((entry) => entry.startsWith("S4_RELAY_AUTH_HEADER=")));
   assert.equal((value.NetworkSettings?.Networks?.[privateNetworkName] != null), true);
+  assert.equal((value.NetworkSettings?.Networks?.[privateNetworkName]?.Aliases || []).includes("relay"), false);
   assert.equal((value.NetworkSettings?.Networks?.[egressNetworkName] != null), true);
 }
 
@@ -492,6 +495,16 @@ function tunnelReady(name) {
 function relayReady() {
   if (!containerRunning(relayName)) return false;
   return relayRequest({ mode: "missing", body: initializeBody(10) }).status === 401;
+}
+
+function relayNetworkReachable() {
+  const script = "const r=await fetch('http://relay:8081/mcp',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}); process.exit(r.status === 401 ? 0 : 1);";
+  const result = run("docker", [
+    "run", "--rm", "--platform", "linux/amd64", "--user", "10001:10001", "--read-only", "--cap-drop", "ALL",
+    "--security-opt", "no-new-privileges:true", "--network", privateNetworkName,
+    "--entrypoint", "node", sidecarImage, "--input-type=module", "-e", script,
+  ], dockerEnv);
+  return result.status === 0;
 }
 
 function relayRequest({ mode, body }) {
