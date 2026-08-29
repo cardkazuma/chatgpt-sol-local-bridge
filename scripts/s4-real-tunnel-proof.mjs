@@ -442,7 +442,7 @@ function verifyChatGptFixture(workspacePath) {
   assert.equal(stat.isFile(), true);
   assert.equal(stat.isSymbolicLink(), false);
   assert.equal(fs.readFileSync(target, "utf8"), "S4 ChatGPT proof complete\n");
-  const ignored = run("git", ["check-ignore", "--quiet", "--", "chatgpt-s4-proof.txt"], sessionGitEnv(workspacePath));
+  const ignored = run("git", ["check-ignore", "--quiet", "--", "chatgpt-s4-proof.txt"], sessionGitEnv(workspacePath), workspacePath);
   assert.equal(ignored.status, 1, "ChatGPT proof file was unexpectedly ignored");
   const status = git(["status", "--porcelain", "--untracked-files=all"], workspacePath, sessionGitEnv(workspacePath)).trim().split(/\r?\n/).filter(Boolean);
   assert.equal(status.length, 1);
@@ -645,8 +645,8 @@ function dockerResourceExists(kind, name) {
   return result.status === 0;
 }
 
-function run(command, args, env = dockerEnv) {
-  const result = spawnSync(command, args, { cwd: repo, env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+function run(command, args, env = dockerEnv, cwd = repo) {
+  const result = spawnSync(command, args, { cwd, env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   return { ...result, output: `${result.stdout || ""}${result.stderr || ""}` };
 }
 
@@ -690,7 +690,7 @@ function sessionGitEnv(workspacePath) {
 }
 
 function git(args, cwd, env) {
-  const result = run("git", args, env);
+  const result = run("git", args, env, cwd);
   assert.equal(result.status, 0, `git ${args.join(" ")} failed: ${sanitize(result.output)}`);
   return result.stdout || "";
 }
