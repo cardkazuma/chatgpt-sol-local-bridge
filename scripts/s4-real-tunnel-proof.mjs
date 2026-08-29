@@ -298,6 +298,7 @@ function createDockerResources() {
   runDocker(["volume", "create", "--name", volumeName], dockerEnv);
   runDocker([
     "run", "--rm", "--platform", "linux/amd64", "--user", "0:0", "--read-only", "--cap-drop", "ALL",
+    "--cap-add", "CHOWN", "--cap-add", "FOWNER",
     "--security-opt", "no-new-privileges:true", "--network", "none", "--mount", `type=volume,src=${volumeName},dst=/transport`,
     "--entrypoint", "/bin/sh", sidecarImage, "-c", "chown 10001:10001 /transport && chmod 0700 /transport",
   ], dockerEnv);
