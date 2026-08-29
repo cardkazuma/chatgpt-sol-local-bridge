@@ -191,7 +191,12 @@ function validateTunnelClient() {
   assert.match(checksums, new RegExp(`${tunnelLinuxAssetSha256}\\s+.*tunnel-client-v${tunnelVersion}-linux-amd64\\.zip`));
   const provenance = JSON.parse(fs.readFileSync(tunnelProvenance, "utf8"));
   assert(provenance && typeof provenance === "object", "tunnel-client provenance bundle is invalid");
-  const help = run(tunnelLinuxBinary, ["run", "--help"]);
+  const help = runDocker([
+    "run", "--rm", "--platform", "linux/amd64", "--user", "10001:10001",
+    "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+    "--network", "none", "--mount", `type=bind,src=${tunnelLinuxBinary},dst=/opt/tunnel-client,readonly`,
+    "--entrypoint", "/opt/tunnel-client", sidecarImage, "run", "--help",
+  ], dockerEnv);
   assert.match(help.output, new RegExp(`run version ${tunnelVersion}\\+${tunnelCommit}`));
 }
 
