@@ -2,13 +2,14 @@ import "dotenv/config";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { EXPECTED_TOOL_NAMES, parseEnabledTools } from "../tool-contract.js";
 import { normalizeHost } from "./net.js";
 
 const HOME = os.homedir();
 const DEFAULT_STATE_DIR = path.join(HOME, ".chatgpt-sol-local-bridge");
 
 export const APP_NAME = "chatgpt-sol-local-bridge";
-export const APP_VERSION = "1.0.0";
+export const APP_VERSION = "1.0.0-s1";
 export const STATE_DIR = path.resolve(expandHome(process.env.BRIDGE_STATE_DIR || DEFAULT_STATE_DIR));
 export const STATE_FILE = path.join(STATE_DIR, "state.json");
 export const LOG_DIR = path.join(STATE_DIR, "logs");
@@ -37,16 +38,27 @@ export const INTERCEPTOR_BIN = process.env.INTERCEPTOR_BIN || "interceptor";
 export const DESTRUCTIVE_AUDIT_FAIL_CLOSED = readBoolean("DESTRUCTIVE_AUDIT_FAIL_CLOSED", true);
 export const DESTRUCTIVE_TOKEN_TTL_MS = readInteger("DESTRUCTIVE_TOKEN_TTL_MS", 600_000, { min: 60_000, max: 86_400_000 });
 export const DESTRUCTIVE_APPROVAL_MODE = readEnum("DESTRUCTIVE_APPROVAL_MODE", "deny", ["deny", "chat", "external"]);
+export const HARDENED_CONTAINER = readBoolean("BRIDGE_HARDENED", false);
 export const APPROVAL_VERIFIER_COMMAND = process.env.APPROVAL_VERIFIER_COMMAND || "";
 export const APPROVAL_VERIFIER_SHA256 = process.env.APPROVAL_VERIFIER_SHA256 || "";
 export const ALLOW_PRIVATE_NETWORK = readBoolean("ALLOW_PRIVATE_NETWORK", false);
 export const ALLOW_CROSS_ORIGIN_REDIRECTS = readBoolean("ALLOW_CROSS_ORIGIN_REDIRECTS", false);
 export const ALLOW_TOOL_ROOT_REGISTRATION = readBoolean("ALLOW_TOOL_ROOT_REGISTRATION", false);
 export const INCLUDE_COMMON_WORKSPACE_ROOTS = readBoolean("INCLUDE_COMMON_WORKSPACE_ROOTS", false);
+export const INCLUDE_SCRATCH_ROOT = readBoolean("INCLUDE_SCRATCH_ROOT", true);
 export const WEB_FETCH_ALLOW_HOSTS = splitList(process.env.WEB_FETCH_ALLOW_HOSTS || "");
 export const TOOL_ENV_INHERIT_SECRETS = readBoolean("TOOL_ENV_INHERIT_SECRETS", false);
 export const TOOL_ENV_ALLOWLIST = new Set(splitRawList(process.env.TOOL_ENV_ALLOWLIST || ""));
 export const DEFAULT_WORKSPACE = process.env.DEFAULT_WORKSPACE ? path.resolve(expandHome(process.env.DEFAULT_WORKSPACE)) : "";
+export const ENABLED_TOOLS = parseEnabledTools(process.env.ENABLED_TOOLS);
+export const ENABLED_TOOL_NAMES = Object.freeze(EXPECTED_TOOL_NAMES.filter((name) => ENABLED_TOOLS.has(name)));
+
+if (HARDENED_CONTAINER && DESTRUCTIVE_APPROVAL_MODE !== "deny") {
+  throw new Error("BRIDGE_HARDENED requires DESTRUCTIVE_APPROVAL_MODE=deny");
+}
+if (HARDENED_CONTAINER && (ALLOW_TOOL_ROOT_REGISTRATION || INCLUDE_COMMON_WORKSPACE_ROOTS || INCLUDE_SCRATCH_ROOT || TOOL_ENV_INHERIT_SECRETS || ALLOW_PRIVATE_NETWORK)) {
+  throw new Error("BRIDGE_HARDENED rejects root expansion, scratch roots, inherited secrets, and private-network access");
+}
 
 export function builtInRoots(platform = process.platform) {
   if (!INCLUDE_COMMON_WORKSPACE_ROOTS) return [];
@@ -141,13 +153,16 @@ export function configuredWorkspaceRoots() {
   return [...new Set([
     ...builtInRoots(),
     ...extraRoots(),
-    ...(state.extraRoots || []).map((item) => path.resolve(item)),
+    ...(HARDENED_CONTAINER ? [] : (state.extraRoots || []).map((item) => path.resolve(item))),
   ])].filter(isDirectory);
 }
 
 export function workspaceRoots() {
   ensureStateDirs();
-  return [...new Set([...configuredWorkspaceRoots(), SCRATCH_DIR])].filter(isDirectory);
+  return [...new Set([
+    ...configuredWorkspaceRoots(),
+    ...(INCLUDE_SCRATCH_ROOT ? [SCRATCH_DIR] : []),
+  ])].filter(isDirectory);
 }
 
 export function validateRuntimeConfig(effectiveHost = HOST) {

@@ -1,79 +1,62 @@
-# Operations runbook
+# S1 operations
 
-## Process topology
+S1 is intentionally foreground/one-shot only. Do not install a LaunchAgent,
+systemd service, scheduler, tunnel client, ChatGPT connection, or other
+persistent runtime at this stage.
 
-Run two independently supervised user processes:
+## Read-only checks
 
-1. Node MCP server on `127.0.0.1:8765`.
-2. `tunnel-client run --profile sol-local-bridge`.
+From this fork:
 
-Provision the profile once. Runtime services should run it, not repeatedly reinitialize it.
-
-## Lifecycle
-
-macOS:
-
-```bash
-./scripts/service-macos.sh install|status|logs|restart|stop|start|uninstall
+```sh
+npm ci --ignore-scripts --no-audit --no-fund
+npm run lint
+npm test
+node src/doctor.js --json
 ```
 
-Linux:
+`doctor` is a local diagnostic. Its `runtime mode` check must report the
+hardened container configuration when used for S1 runtime review.
 
-```bash
-./scripts/service-linux.sh install|status|logs|restart|stop|start|uninstall
+## Disposable container proof
+
+Run:
+
+```sh
+node scripts/s1-host-proof.mjs
 ```
 
-Windows:
+The wrapper creates a fresh repository and fake credential sentinels under the
+system temporary directory, runs `docker compose config -q`, builds the pinned
+image, executes the in-container adversarial/normal-function proof, inspects
+the stopped container, verifies host sentinels, and removes only that temporary
+container and fixture.
 
-```powershell
-.\scripts\windows\service.ps1 install|status|logs|restart|stop|start|uninstall
-```
+The proof must report `containerExit: 0`, `passed: 13`, `failed: 0`, and
+`hostSentinelsUnchanged: true`. A failed proof is not a redeployment approval.
 
-Uninstall keeps runtime configuration, state, approvals, audit records, and logs. Remove those manually only after deciding they are no longer needed.
+## Compose inputs
 
-## Health
-
-```bash
-curl -fsS http://127.0.0.1:8765/healthz
-curl -fsS http://127.0.0.1:8765/readyz
-npm run doctor
-npm run smoke
-```
-
-`readyz` publishes the frozen 44-tool contract. `smoke` performs writes only inside a unique run directory under `BRIDGE_SCRATCH_DIR` (or `SMOKE_WORKSPACE`) and cleans it in `finally`.
-
-## Logs/state
-
-Default Unix state:
+`compose.yaml` requires these values and must receive them only from the
+disposable proof or an equivalently isolated fixture:
 
 ```text
-~/.chatgpt-sol-local-bridge/
-  audit/bridge.jsonl
-  captures/
-  logs/
-  processes/
-  pending-destructive.json
-  state.json
+BRIDGE_WORKSPACE=/absolute/path/to/disposable-repository
+BRIDGE_GIT_CONFIG=/absolute/path/to/disposable-repository/.git/config
+BRIDGE_GITHOOKS=/absolute/path/to/disposable-repository/.githooks
+BRIDGE_POLICY_FILE=/absolute/path/to/disposable-repository/scripts/pre-commit-policy.mjs
 ```
 
-Windows uses the same state folder under `%USERPROFILE%`. Agent-visible scratch data lives separately at `~/.chatgpt-sol-local-bridge-scratch` by default; internal state is not a file-tool root.
+The service has no published port and no restart policy. Its only writable
+host mount is the disposable repository; the nested Git governance mounts are
+read-only. Do not substitute a normal working copy, a homelab checkout,
+`/volume1/docker`, a home directory, a NAS path, or a credential-bearing path.
 
-## Key/profile rotation
+## Stop/rollback
 
-1. Create a replacement runtime API key.
-2. Update `runtime.env` without changing its owner/permissions.
-3. Run `tunnel-client doctor --profile <profile> --explain` through `scripts/run-with-env.mjs`.
-4. Restart only the tunnel service.
-5. Revoke the old key.
-
-## Upgrade
-
-```bash
-git pull --ff-only
-npm ci
-npm run check
-npm run doctor
-# then restart services for your platform
-```
-
-Use a release checkout rather than an actively edited working tree for unattended operation. Keep filesystem snapshots/backups of connected projects.
+The proof removes its stopped container automatically. If a manual disposable
+run was made, identify the exact S1 container by name and remove only that
+container; remove the S1 image only after verifying its exact tag. Delete or
+archive only the disposable fixture and this sibling fork if rollback is
+needed. No canonical repository, NAS path, service, backup, credential, or
+persistent host configuration is part of S1.

@@ -1,13 +1,5 @@
-# macOS LaunchAgent
+# Not used in S1
 
-The maintained macOS service interface is:
-
-```bash
-./scripts/service-macos.sh install
-./scripts/service-macos.sh status
-./scripts/service-macos.sh logs
-./scripts/service-macos.sh restart
-./scripts/service-macos.sh uninstall
-```
-
-It installs separate per-user LaunchAgents for the MCP server and `tunnel-client`. See [Operations](../docs/OPERATIONS.md) and the main README.
+The upstream LaunchAgent templates are retained only as provenance outside
+the S1 runtime image. S1 does not install or enable persistent services. Any
+future lifecycle integration requires a separate review and approval.

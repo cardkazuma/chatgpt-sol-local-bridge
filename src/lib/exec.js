@@ -10,6 +10,7 @@ import {
   MAX_STDOUT_CHARS,
   PROCESS_RETENTION_DAYS,
   PROC_DIR,
+  HARDENED_CONTAINER,
   TOOL_ENV_ALLOWLIST,
   TOOL_ENV_INHERIT_SECRETS,
   atomicWriteJson,
@@ -245,6 +246,13 @@ export function commandExists(command) {
 
 function getProcessIdentity(pid) {
   try {
+    if (process.platform === "linux") {
+      const stat = fs.readFileSync(`/proc/${Number(pid)}/stat`, "utf8");
+      const endOfCommand = stat.lastIndexOf(")");
+      const fieldsAfterCommand = stat.slice(endOfCommand + 2).trim().split(/\s+/);
+      const startTime = fieldsAfterCommand[19];
+      return startTime ? `linux:${startTime}` : "";
+    }
     if (process.platform === "win32") {
       const script = `(Get-Process -Id ${Number(pid)} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`;
       const binary = commandExists("pwsh") ? "pwsh" : "powershell.exe";
@@ -259,8 +267,10 @@ function getProcessIdentity(pid) {
 }
 
 export function toolEnvironment(overrides = {}) {
-  const env = { ...process.env, ...(overrides || {}) };
-  if (TOOL_ENV_INHERIT_SECRETS) return env;
+  const env = HARDENED_CONTAINER
+    ? hardenedEnvironment(overrides)
+    : { ...process.env, ...(overrides || {}) };
+  if (TOOL_ENV_INHERIT_SECRETS && !HARDENED_CONTAINER) return env;
   for (const key of Object.keys(env)) {
     if (TOOL_ENV_ALLOWLIST.has(key)) continue;
     if (/(?:^|_)(?:TOKEN|SECRET|PASSWORD|PASSWD|KEY|API_KEY|PRIVATE_KEY|CREDENTIALS?)(?:$|_)/i.test(key)
@@ -268,6 +278,25 @@ export function toolEnvironment(overrides = {}) {
       delete env[key];
     }
   }
+  return env;
+}
+
+function hardenedEnvironment(overrides) {
+  const allowed = new Set([
+    "CI", "HOME", "HOST", "LANG", "LC_ALL", "LC_CTYPE", "LOGNAME", "NODE_ENV", "NO_COLOR",
+    "PATH", "PORT", "PWD", "TEMP", "TERM", "TMP", "TMPDIR", "TZ", "USER",
+  ]);
+  const env = Object.fromEntries(Object.entries({ ...process.env, ...(overrides || {}) })
+    .filter(([key]) => allowed.has(key)));
+  env.HOME ||= "/home/bridge";
+  env.TMPDIR ||= "/tmp";
+  env.TMP ||= "/tmp";
+  env.TEMP ||= "/tmp";
+  env.NO_COLOR ||= "1";
+  env.NPM_CONFIG_USERCONFIG = "/dev/null";
+  env.GIT_CONFIG_NOSYSTEM = "1";
+  env.GIT_CONFIG_GLOBAL = "/dev/null";
+  env.GIT_TERMINAL_PROMPT = "0";
   return env;
 }
 

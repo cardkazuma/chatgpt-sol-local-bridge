@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import {
@@ -8,9 +7,9 @@ import {
   APP_VERSION,
   DEFAULT_WORKSPACE,
   HOST,
-  MCP_TOKEN,
   PORT,
   STATE_DIR,
+  ENABLED_TOOL_NAMES,
   configuredWorkspaceRoots,
   ensureStateDirs,
   validateRuntimeConfig,
@@ -28,7 +27,7 @@ const major = Number(process.versions.node.split(".")[0]);
 check("Node.js", major >= 20 ? "pass" : "fail", process.version, true);
 try {
   validateRuntimeConfig();
-  check("runtime config", "pass", `HOST=${HOST} PORT=${PORT} auth=${MCP_TOKEN ? "bearer" : "loopback-only"}`, true);
+  check("runtime config", "pass", `HOST=${HOST} PORT=${PORT} active=${ENABLED_TOOL_NAMES.length}`, true);
 } catch (error) {
   check("runtime config", "fail", error.message, true);
 }
@@ -55,44 +54,22 @@ if (DEFAULT_WORKSPACE) {
   check("default workspace", "warn", "not set; call workspace_open before project work");
 }
 
-for (const binary of ["git", "tunnel-client"]) {
+for (const binary of ["git", "rg"]) {
   check(binary, commandExists(binary) ? "pass" : "fail", commandExists(binary) ? version(binary) : "not found", true);
-}
-for (const binary of ["rg", "codex", "interceptor", "ffmpeg", "tesseract"]) {
-  check(binary, commandExists(binary) ? "pass" : "warn", commandExists(binary) ? version(binary) : "optional; corresponding tools will report unavailable");
 }
 
 const platform = platformSummary();
 for (const [capability, supported] of Object.entries(platform.capabilities)) {
   check(`platform:${capability}`, supported ? "pass" : "warn", supported ? `${platform.adapter} dependency detected (runtime permission/device probe still required)` : `${platform.adapter} backend dependency missing`);
 }
-check("tool contract", EXPECTED_TOOL_NAMES.length === 44 ? "pass" : "fail", `${EXPECTED_TOOL_NAMES.length} declared tools`, true);
-check("host", "pass", `${os.hostname()} ${process.platform}/${process.arch}`);
-const tunnelId = process.env.CONTROL_PLANE_TUNNEL_ID || "";
-const tunnelKey = process.env.CONTROL_PLANE_API_KEY || "";
-check("tunnel id", tunnelId && !tunnelId.includes("REPLACE_ME") ? "pass" : "warn", tunnelId ? "configured" : "not present in this environment");
-check("tunnel key", tunnelKey && !tunnelKey.includes("REPLACE_ME") ? "pass" : "warn", tunnelKey ? "configured (redacted)" : "not present in this environment");
-const tunnelMode = process.argv.includes("--tunnel");
-const tunnelProfile = process.env.TUNNEL_PROFILE || "sol-local-bridge";
-if (commandExists("tunnel-client")) {
-  const profilesResult = spawnSync("tunnel-client", ["profiles", "list", "--json"], { encoding: "utf8", timeout: 10_000 });
-  let profileFound = false;
-  try {
-    const profiles = JSON.parse(profilesResult.stdout || "[]");
-    profileFound = profiles.some((item) => (typeof item === "string" ? item : item.name || item.profile) === tunnelProfile);
-  } catch {}
-  check("tunnel profile", profileFound ? "pass" : tunnelMode ? "fail" : "warn", profileFound ? tunnelProfile : `${tunnelProfile} not found`, tunnelMode);
-  if (tunnelMode && profileFound) {
-    const result = spawnSync("tunnel-client", ["doctor", "--profile", tunnelProfile, "--explain"], { encoding: "utf8", timeout: 60_000, env: process.env });
-    check("tunnel doctor", result.status === 0 ? "pass" : "fail", (result.status === 0 ? result.stdout : result.stderr || result.stdout).trim().slice(0, 500), true);
-  }
-}
+check("tool contract", EXPECTED_TOOL_NAMES.length === 27 ? "pass" : "fail", `${EXPECTED_TOOL_NAMES.length} S1 catalog tools`, true);
+check("runtime mode", process.env.BRIDGE_HARDENED === "true" ? "pass" : "warn", process.env.BRIDGE_HARDENED === "true" ? "hardened container requested" : "host mode; use the S1 container runtime for execution");
 
 if (process.argv.includes("--live")) {
   try {
     const response = await fetch(httpUrl(HOST, PORT, "/readyz"));
     const body = await response.json();
-    check("live bridge", response.ok && body.toolCount === 44 ? "pass" : "fail", `${response.status} tools=${body.toolCount}`, true);
+    check("live bridge", response.ok && body.toolCount === ENABLED_TOOL_NAMES.length ? "pass" : "fail", `${response.status} tools=${body.toolCount}`, true);
   } catch (error) {
     check("live bridge", "fail", error.message, true);
   }

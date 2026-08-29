@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 
-const base = fs.mkdtempSync(path.join(os.homedir(), ".sol-path-test-"));
+const base = fs.mkdtempSync(path.join(os.tmpdir(), "sol-path-test-"));
 const root = path.join(base, "root");
 const outside = path.join(base, "outside");
 fs.mkdirSync(root);
@@ -18,7 +19,7 @@ const config = await import("../../src/lib/config.js");
 test.after(() => fs.rmSync(base, { recursive: true, force: true }));
 
 test("grants only explicit roots by default", () => {
-  assert.deepEqual(config.configuredWorkspaceRoots(), [fs.realpathSync(root)]);
+  assert.deepEqual(config.configuredWorkspaceRoots(), [path.resolve(root)]);
   assert.equal(config.workspaceRoots().includes(config.SCRATCH_DIR), true);
 });
 
@@ -41,6 +42,23 @@ test("resolves symlinks before enforcing workspace authority", { skip: process.p
   fs.symlinkSync(path.join(outside, "not-created.txt"), dangling, "file");
   assert.throws(() => paths.assertInWorkspace(dangling, { write: true }), /dangling symlink/);
 });
+
+test("structured paths deny secret-sensitive filenames and ignored repository files", () => {
+  fs.writeFileSync(path.join(root, ".env"), "TOKEN=not-for-tools\n");
+  fs.writeFileSync(path.join(root, "application.log"), "credential-bearing log\n");
+  assert.throws(() => paths.assertStructuredPath(path.join(root, ".env")), /secret-sensitive/);
+  assert.throws(() => paths.assertStructuredPath(path.join(root, "application.log")), /secret-sensitive/);
+
+  fs.writeFileSync(path.join(root, ".gitignore"), "ignored.txt\n");
+  fs.writeFileSync(path.join(root, "ignored.txt"), "ignored\n");
+  spawnGit(["init", "-q"], root);
+  assert.throws(() => paths.assertStructuredPath(path.join(root, "ignored.txt")), /repository-ignored/);
+});
+
+function spawnGit(args, cwd) {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+}
 
 function canSymlink() {
   try {

@@ -7,6 +7,7 @@ import {
   APP_NAME,
   APP_VERSION,
   BODY_LIMIT,
+  ENABLED_TOOL_NAMES,
   HOST,
   MCP_TOKEN,
   PORT,
@@ -17,8 +18,6 @@ import {
 import { auditEvent, instrumentServer } from "./lib/audit.js";
 import { httpUrl, normalizeHost } from "./lib/net.js";
 import { platformSummary } from "./platform/index.js";
-import { EXPECTED_TOOL_NAMES } from "./tool-contract.js";
-import { registerDesktop } from "./tools/desktop.js";
 import { registerFiles } from "./tools/files.js";
 import { registerGit } from "./tools/git.js";
 import { registerPolicy } from "./tools/policy.js";
@@ -26,7 +25,7 @@ import { registerProcess } from "./tools/process.js";
 import { registerProject } from "./tools/project.js";
 import { registerWorkspace } from "./tools/workspace.js";
 
-// The control-plane key belongs only to tunnel-client and must never reach tool children.
+// A control-plane key, if inherited from an outer launcher, must never reach tool children.
 delete process.env.CONTROL_PLANE_API_KEY;
 
 export function createServer() {
@@ -39,8 +38,9 @@ export function createServer() {
       "You are connected to this workstation through chatgpt-sol-local-bridge.",
       "Call bridge_instructions before operating.",
       "Create/update/edit/test/build are allowed inside registered workspaces.",
-      "Destructive actions are blocked until the human confirms an exact short-lived token.",
-      `Active platform adapter: ${platformSummary().adapter}.`,
+      "The repo_shell and project commands run only inside the hardened non-root bridge container.",
+      "Destructive approval mode is deny; no destructive confirmation tool is exposed.",
+      `Enabled S1 tools: ${ENABLED_TOOL_NAMES.join(", ")}.`,
     ].join(" "),
   }));
   registerPolicy(server);
@@ -49,7 +49,6 @@ export function createServer() {
   registerGit(server);
   registerProject(server);
   registerProcess(server);
-  registerDesktop(server);
   return server;
 }
 
@@ -71,7 +70,7 @@ export function createApp({ host = HOST } = {}) {
     res.json({ ok: true, name: APP_NAME, version: APP_VERSION, platform: platformSummary(), pid: process.pid });
   });
   app.get("/readyz", (_req, res) => {
-    res.json({ ready: true, toolCount: EXPECTED_TOOL_NAMES.length, tools: EXPECTED_TOOL_NAMES });
+    res.json({ ready: true, toolCount: ENABLED_TOOL_NAMES.length, tools: ENABLED_TOOL_NAMES });
   });
 
   app.post("/mcp", async (req, res) => {
@@ -116,7 +115,7 @@ export function startHttpServer({ host = HOST, port = PORT } = {}) {
     const address = httpServer.address();
     const actualPort = typeof address === "object" && address ? address.port : port;
     console.log(`${APP_NAME} ${APP_VERSION} listening on ${httpUrl(host, actualPort, "/mcp")}`);
-    console.log(`44 tools | platform=${platformSummary().adapter} | destructive approval enabled`);
+    console.log(`${ENABLED_TOOL_NAMES.length} enabled S1 tools | platform=${platformSummary().adapter} | destructive approval=${process.env.DESTRUCTIVE_APPROVAL_MODE || "deny"}`);
     auditEvent("server.started", { host, port: actualPort, platform: platformSummary() });
   });
 

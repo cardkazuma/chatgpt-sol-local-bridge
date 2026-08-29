@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const base = fs.mkdtempSync(path.join(os.homedir(), ".sol-office-test-"));
+const base = fs.mkdtempSync(path.join(os.tmpdir(), "sol-office-test-"));
 process.env.BRIDGE_STATE_DIR = path.join(base, "state");
 process.env.WORKSPACE_ROOTS = base;
 const { readOfficeFile, writeOfficeFile } = await import("../../src/lib/office.js");

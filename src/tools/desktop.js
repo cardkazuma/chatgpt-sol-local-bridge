@@ -7,11 +7,12 @@ import { readOfficeFile, writeOfficeFile } from "../lib/office.js";
 import { denyDeleteMessage, inspectDestructive, queueDestructive } from "../lib/policy.js";
 import { safeWebFetch } from "../lib/web-fetch.js";
 import { assertInWorkspace, resolveUserPath } from "../lib/paths.js";
+import { registerEnabledTool } from "../lib/tool-registry.js";
 import { fail, json, ok, splitArgs } from "../lib/text.js";
 import { platformAdapter } from "../platform/index.js";
 
 export function registerDesktop(server) {
-  server.registerTool("dom_cdp", {
+  registerEnabledTool(server, "dom_cdp", {
     title: "Browser / CDP",
     description: "Drive a signed-in browser through interceptor: open, read, inspect, click, type, navigate, evaluate, list tabs, and screenshot.",
     inputSchema: { action: z.string().min(1).describe("interceptor browser action, e.g. 'open https://example.com --text-only'") },
@@ -22,7 +23,7 @@ export function registerDesktop(server) {
     return /\bscreenshot\b/i.test(action) ? packVision(withDiscoveredImage(result)) : pack(result);
   });
 
-  server.registerTool("accessibility", {
+  registerEnabledTool(server, "accessibility", {
     title: "Native accessibility",
     description: "Inspect and operate native application accessibility/UI Automation using the active macOS, Linux, or Windows adapter.",
     inputSchema: { action: z.string().min(1) },
@@ -32,21 +33,21 @@ export function registerDesktop(server) {
     return pack(await platformAdapter.accessibility(action));
   });
 
-  server.registerTool("input_event", {
+  registerEnabledTool(server, "input_event", {
     title: "Keyboard / mouse",
     description: "Low-level keyboard, click, and scroll input through the active platform adapter.",
     inputSchema: { action: z.string().min(1) },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   }, async ({ action }) => pack(await platformAdapter.inputEvent(action)));
 
-  server.registerTool("vision", {
+  registerEnabledTool(server, "vision", {
     title: "Vision / OCR",
     description: "Capture the screen/window and optionally OCR it using the active platform adapter.",
     inputSchema: { app: z.string().optional(), mode: z.enum(["screenshot", "ocr", "text"]).optional() },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
   }, async (args = {}) => packVision(await platformAdapter.vision(args)));
 
-  server.registerTool("window", {
+  registerEnabledTool(server, "window", {
     title: "Window",
     description: "List, activate, move, resize, minimize/maximize, or close native windows using the active platform adapter. Close/quit/kill requires confirmation.",
     inputSchema: { action: z.string().min(1) },
@@ -58,7 +59,7 @@ export function registerDesktop(server) {
     return pack(await platformAdapter.window(action));
   });
 
-  server.registerTool("clipboard", {
+  registerEnabledTool(server, "clipboard", {
     title: "Clipboard",
     description: "Read or write the local text clipboard through the active platform adapter.",
     inputSchema: { mode: z.enum(["read", "write"]), text: z.string().optional() },
@@ -68,28 +69,28 @@ export function registerDesktop(server) {
     return pack(await platformAdapter.clipboard({ mode, text: text || "" }));
   });
 
-  server.registerTool("notification", {
+  registerEnabledTool(server, "notification", {
     title: "Notification",
     description: "Post a native OS notification.",
     inputSchema: { title: z.string().min(1), body: z.string().optional() },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   }, async (args) => pack(await platformAdapter.notification(args)));
 
-  server.registerTool("file_dialog", {
+  registerEnabledTool(server, "file_dialog", {
     title: "File dialog",
     description: "Open a native Open/Save dialog and return the chosen path.",
     inputSchema: { mode: z.enum(["open", "save"]).optional(), prompt: z.string().optional() },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   }, async (args = {}) => pack(await platformAdapter.fileDialog(args)));
 
-  server.registerTool("screen_record", {
+  registerEnabledTool(server, "screen_record", {
     title: "Screen record",
     description: "Record a bounded 2–60 second screen capture with the platform's ffmpeg backend.",
     inputSchema: { action: z.enum(["start", "stop"]), seconds: z.number().int().min(2).max(60).optional() },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   }, async (args) => pack(await platformAdapter.screenRecord(args)));
 
-  server.registerTool("audio", {
+  registerEnabledTool(server, "audio", {
     title: "Audio",
     description: "Record a bounded microphone clip or play a local audio file through the active platform adapter.",
     inputSchema: {
@@ -109,7 +110,7 @@ export function registerDesktop(server) {
     }
   });
 
-  server.registerTool("scheduler", {
+  registerEnabledTool(server, "scheduler", {
     title: "Scheduler",
     description: "List or create user-scoped scheduled tasks using launchd, systemd-user, or Windows Task Scheduler. Deletion is intentionally not exposed.",
     inputSchema: {
@@ -132,7 +133,7 @@ export function registerDesktop(server) {
     return pack(await platformAdapter.scheduler(args));
   });
 
-  server.registerTool("web_fetch", {
+  registerEnabledTool(server, "web_fetch", {
     title: "Web fetch",
     description: "Bounded HTTP request from the workstation. Private/local addresses are blocked by default and redirects are revalidated; allow them explicitly for intranet use.",
     inputSchema: {
@@ -150,7 +151,7 @@ export function registerDesktop(server) {
     catch (error) { return fail(error.message); }
   });
 
-  server.registerTool("office", {
+  registerEnabledTool(server, "office", {
     title: "Office documents",
     description: "Cross-platform read/write for .docx and .xlsx plus CSV/TSV/text. Uses Node document libraries, not platform-specific Office COM.",
     inputSchema: {

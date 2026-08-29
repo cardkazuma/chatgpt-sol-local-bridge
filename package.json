@@ -1,9 +1,9 @@
 {
   "name": "chatgpt-sol-local-bridge",
-  "version": "1.0.0",
-  "description": "Production-grade, cross-platform 44-tool MCP bridge from ChatGPT to a local workstation over OpenAI Secure MCP Tunnel.",
+  "version": "1.0.0-s1",
+  "description": "Pinned S1 MCP bridge foundation for disposable repository workspaces inside a hardened container.",
   "type": "module",
-  "private": false,
+  "private": true,
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -14,8 +14,6 @@
   },
   "scripts": {
     "start": "node src/server.js",
-    "start:all": "node scripts/start-all.mjs",
-    "dev": "node --watch src/server.js",
     "doctor": "node src/doctor.js",
     "smoke": "node scripts/smoke.mjs",
     "test": "node scripts/run-tests.mjs",
@@ -26,23 +24,23 @@
     "prepublishOnly": "npm run check"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "docx": "^9.5.1",
-    "dotenv": "^17.2.3",
-    "exceljs": "^4.4.0",
-    "express": "^5.2.1",
-    "ipaddr.js": "^2.2.0",
-    "mammoth": "^1.10.0",
-    "undici": "^6.21.3",
-    "zod": "^4.4.3"
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "docx": "9.5.1",
+    "dotenv": "17.4.2",
+    "exceljs": "4.4.0",
+    "express": "5.2.1",
+    "ipaddr.js": "2.5.0",
+    "mammoth": "1.10.0",
+    "undici": "6.28.0",
+    "zod": "4.4.3"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.2",
-    "eslint": "^9.39.2",
-    "globals": "^16.5.0"
+    "@eslint/js": "9.39.5",
+    "eslint": "9.39.5",
+    "globals": "16.5.0"
   },
   "overrides": {
-    "uuid": "^11.1.1"
+    "uuid": "11.1.1"
   },
   "files": [
     "src",
