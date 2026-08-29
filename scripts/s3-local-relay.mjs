@@ -8,7 +8,6 @@ const relaySocket = process.env.S3_RELAY_SOCKET || "";
 const relayHost = process.env.S3_RELAY_HOST || "";
 const relayPort = relayHost ? Number(required("S3_RELAY_PORT")) : 0;
 const token = required("S3_RELAY_TOKEN");
-const resourceUrl = process.env.S3_MCP_RESOURCE_URL || defaultResourceUrl();
 const maxBodyBytes = 2 * 1024 * 1024;
 const metadataPaths = new Set([
   "/.well-known/oauth-protected-resource",
@@ -18,9 +17,12 @@ const metadataPaths = new Set([
 validateListenTarget();
 if (relaySocket) prepareSocket(relaySocket);
 const server = http.createServer(async (request, response) => {
-  if (request.method === "GET" && (request.url === "/" || metadataPaths.has(request.url))) {
-    response.writeHead(200, { "cache-control": "no-store", "content-type": "application/json" });
-    response.end(JSON.stringify({ resource: resourceUrl }));
+  if (request.method === "GET" && metadataPaths.has(request.url)) {
+    // This relay uses a private bearer shared with tunnel-client, not OAuth.
+    // A 404 on PRM candidates makes the no-auth MCP contract explicit and
+    // prevents the tunnel client from treating the custom bearer as OAuth.
+    response.writeHead(404, { "cache-control": "no-store", "content-type": "application/json" });
+    response.end(JSON.stringify({ error: "OAuth protected-resource metadata is not configured" }));
     return;
   }
   if (request.method !== "POST" || request.url !== "/mcp") {
@@ -137,10 +139,4 @@ function validateListenTarget() {
     throw new Error("S3_RELAY_HOST must be loopback-only unless S4_RELAY_INTERNAL=true permits 0.0.0.0 on an isolated container network");
   }
   if (relayHost && (!Number.isInteger(relayPort) || relayPort < 1 || relayPort > 65535)) throw new Error("S3_RELAY_PORT must be a valid TCP port");
-}
-
-function defaultResourceUrl() {
-  if (!relayHost) return "http://localhost/mcp";
-  const host = relayHost === "0.0.0.0" ? "localhost" : relayHost;
-  return `http://${host}:${relayPort}/mcp`;
 }
