@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -8,12 +10,15 @@ import {
   APP_VERSION,
   BODY_LIMIT,
   ENABLED_TOOL_NAMES,
+  HARDENED_CONTAINER,
   HOST,
   MCP_TOKEN,
+  MCP_UNIX_SOCKET_PATH,
   PORT,
   ensureStateDirs,
   isLoopbackHost,
   validateRuntimeConfig,
+  validateUnixSocketPath,
 } from "./lib/config.js";
 import { auditEvent, instrumentServer } from "./lib/audit.js";
 import { httpUrl, normalizeHost } from "./lib/net.js";
@@ -108,16 +113,33 @@ export function createApp({ host = HOST } = {}) {
   return { app, activeTransports };
 }
 
-export function startHttpServer({ host = HOST, port = PORT } = {}) {
+export function startHttpServer({ host = HOST, port = PORT, unixSocketPath = MCP_UNIX_SOCKET_PATH } = {}) {
   const { app, activeTransports } = createApp({ host });
+  validateUnixSocketPath(unixSocketPath);
+  if (unixSocketPath) prepareUnixSocket(unixSocketPath);
   const sockets = new Set();
-  const httpServer = app.listen(port, host, () => {
+  const httpServer = unixSocketPath
+    ? app.listen(unixSocketPath, onListening)
+    : app.listen(port, host, onListening);
+
+  function onListening() {
+    if (unixSocketPath) {
+      try {
+        fs.chmodSync(unixSocketPath, 0o600);
+      } catch (error) {
+        if (!new Set(["EINVAL", "ENOTSUP"]).has(error?.code)) throw error;
+        auditEvent("server.socket_mode_unavailable", { socketPath: unixSocketPath, error: error.code });
+      }
+    }
     const address = httpServer.address();
     const actualPort = typeof address === "object" && address ? address.port : port;
-    console.log(`${APP_NAME} ${APP_VERSION} listening on ${httpUrl(host, actualPort, "/mcp")}`);
+    const endpoint = unixSocketPath
+      ? `Unix socket ${unixSocketPath} (HTTP path /mcp)`
+      : httpUrl(host, actualPort, "/mcp");
+    console.log(`${APP_NAME} ${APP_VERSION} listening on ${endpoint}`);
     console.log(`${ENABLED_TOOL_NAMES.length} enabled S1 tools | platform=${platformSummary().adapter} | destructive approval=${process.env.DESTRUCTIVE_APPROVAL_MODE || "deny"}`);
-    auditEvent("server.started", { host, port: actualPort, platform: platformSummary() });
-  });
+    auditEvent("server.started", { host, port: actualPort, unixSocketPath: unixSocketPath || null, platform: platformSummary() });
+  }
 
   httpServer.on("connection", (socket) => {
     sockets.add(socket);
@@ -137,8 +159,40 @@ export function startHttpServer({ host = HOST, port = PORT } = {}) {
       for (const socket of sockets) socket.destroy();
       await Promise.race([closed, delay(500)]);
     }
+    if (unixSocketPath) removeOwnedUnixSocket(unixSocketPath);
   };
   return { app, httpServer, shutdown };
+}
+
+function prepareUnixSocket(socketPath) {
+  const parent = path.dirname(socketPath);
+  fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
+  if ((fs.statSync(parent).mode & 0o077) !== 0) throw new Error(`MCP Unix socket parent must be private: ${parent}`);
+  if (HARDENED_CONTAINER) {
+    const transportRoot = fs.realpathSync("/transport");
+    const parentReal = fs.realpathSync(parent);
+    if (transportRoot !== "/transport" || !isWithinPath(parentReal, transportRoot)) {
+      throw new Error(`MCP Unix socket parent escaped /transport: ${parent}`);
+    }
+  }
+  if (!fs.existsSync(socketPath)) return;
+  const stat = fs.lstatSync(socketPath);
+  if (!stat.isSocket()) throw new Error(`Refusing to replace non-socket MCP_UNIX_SOCKET_PATH: ${socketPath}`);
+  fs.unlinkSync(socketPath);
+}
+
+function isWithinPath(candidate, parent) {
+  const relative = path.relative(parent, candidate);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+function removeOwnedUnixSocket(socketPath) {
+  try {
+    const stat = fs.lstatSync(socketPath);
+    if (stat.isSocket()) fs.unlinkSync(socketPath);
+  } catch (error) {
+    if (error?.code !== "ENOENT") auditEvent("server.socket_cleanup_failed", { socketPath, error: error.message });
+  }
 }
 
 function authorized(req) {

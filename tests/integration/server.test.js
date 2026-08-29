@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { once } from "node:events";
@@ -35,6 +36,9 @@ const runtime = startHttpServer({ host: "127.0.0.1", port: 0 });
 if (!runtime.httpServer.listening) await once(runtime.httpServer, "listening");
 const port = runtime.httpServer.address().port;
 const url = `http://127.0.0.1:${port}/mcp`;
+const unixSocketPath = path.join(base, "transport", "mcp.sock");
+const unixRuntime = startHttpServer({ unixSocketPath });
+if (!unixRuntime.httpServer.listening) await once(unixRuntime.httpServer, "listening");
 const client = new Client({ name: "integration-test", version: "1.0.0" });
 const transport = new StreamableHTTPClientTransport(new URL(url), {
   requestInit: { headers: { Authorization: "Bearer integration-secret" } },
@@ -44,6 +48,7 @@ await client.connect(transport);
 test.after(async () => {
   await client.close().catch(() => {});
   await runtime.shutdown("test");
+  await unixRuntime.shutdown("test");
   fs.rmSync(base, { recursive: true, force: true });
 });
 
@@ -58,6 +63,29 @@ test("HTTP endpoint enforces bearer authentication", async () => {
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
   });
   assert.equal(response.status, 401);
+});
+
+test("Unix socket endpoint enforces the same explicit bearer authentication", async () => {
+  const denied = await requestUnix({
+    body: { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} },
+  });
+  assert.equal(denied.status, 401);
+
+  const allowed = await requestUnix({
+    authorization: "Bearer integration-secret",
+    body: {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "unix-integration-test", version: "1.0.0" },
+      },
+    },
+  });
+  assert.equal(allowed.status, 200);
+  assert.match(allowed.body, /serverInfo|protocolVersion/);
 });
 
 test("MCP discovery exposes exactly the reviewed S1 catalog", async () => {
@@ -190,6 +218,31 @@ function installReviewedHook(target) {
 function spawnGit(args, cwd) {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr || result.stdout);
+}
+
+function requestUnix({ authorization, body }) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const headers = {
+      accept: "application/json, text/event-stream",
+      "content-type": "application/json",
+      "content-length": Buffer.byteLength(payload),
+    };
+    if (authorization) headers.authorization = authorization;
+    const request = http.request({
+      socketPath: unixSocketPath,
+      path: "/mcp",
+      method: "POST",
+      headers,
+    }, (response) => {
+      const chunks = [];
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => resolve({ status: response.statusCode, body: chunks.join("") }));
+    });
+    request.on("error", reject);
+    request.end(payload);
+  });
 }
 
 function textOf(result) {

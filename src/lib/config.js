@@ -22,6 +22,7 @@ export const SCRATCH_DIR = path.resolve(expandHome(process.env.BRIDGE_SCRATCH_DI
 
 export const HOST = process.env.HOST || "127.0.0.1";
 export const PORT = readInteger("PORT", 8765, { min: 1, max: 65_535 });
+export const MCP_UNIX_SOCKET_PATH = process.env.MCP_UNIX_SOCKET_PATH || "";
 export const MCP_TOKEN = process.env.MCP_TOKEN || "";
 export const BODY_LIMIT = process.env.BODY_LIMIT || "2mb";
 export const COMMAND_TIMEOUT_MS = readInteger("COMMAND_TIMEOUT_MS", 120_000, { min: 1_000, max: 900_000 });
@@ -168,6 +169,23 @@ export function workspaceRoots() {
 export function validateRuntimeConfig(effectiveHost = HOST) {
   if (!isLoopbackHost(effectiveHost)) {
     throw new Error(`Refusing HOST=${effectiveHost}; this bridge is intentionally loopback-only. Put an independently authenticated TLS proxy in front only after a separate security review.`);
+  }
+  validateUnixSocketPath(MCP_UNIX_SOCKET_PATH);
+}
+
+export function validateUnixSocketPath(socketPath) {
+  if (!socketPath) return;
+  if (!path.isAbsolute(socketPath) || socketPath.includes("\0")) {
+    throw new Error("MCP_UNIX_SOCKET_PATH must be an absolute Unix socket path");
+  }
+  if (path.posix.normalize(socketPath) !== socketPath) {
+    throw new Error("MCP_UNIX_SOCKET_PATH must be normalized and must not contain traversal components");
+  }
+  if (Buffer.byteLength(socketPath) > 100) {
+    throw new Error("MCP_UNIX_SOCKET_PATH is too long for a Unix domain socket");
+  }
+  if (HARDENED_CONTAINER && !(socketPath === "/transport" || socketPath.startsWith("/transport/"))) {
+    throw new Error("BRIDGE_HARDENED requires MCP_UNIX_SOCKET_PATH under /transport");
   }
 }
 
