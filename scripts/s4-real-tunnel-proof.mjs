@@ -172,7 +172,7 @@ function validateInputs() {
   assert(stat.isFile(), "S4_CREDENTIAL_FILE must be a regular file");
   assert.equal(stat.mode & 0o077, 0, "S4_CREDENTIAL_FILE must not be group/world accessible");
   if (typeof process.getuid === "function") assert.equal(stat.uid, process.getuid(), "S4_CREDENTIAL_FILE must be owned by the invoking user");
-  assert(isWithin(resolved, os.tmpdir()), "S4_CREDENTIAL_FILE must be under the OS temporary directory");
+  assert(isWithin(resolved, fs.realpathSync(os.tmpdir())), "S4_CREDENTIAL_FILE must be under the OS temporary directory");
   const lines = fs.readFileSync(resolved, "utf8").split(/\n/);
   if (lines.at(-1) === "") lines.pop();
   assert.equal(lines.length, 1, "S4_CREDENTIAL_FILE must contain exactly one env assignment");
