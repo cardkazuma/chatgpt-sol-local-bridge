@@ -6,7 +6,7 @@ import { runCommand } from "./exec.js";
 export const REVIEWED_HOOK_SOURCE = "#!/bin/sh\nset -eu\nexec node scripts/pre-commit-policy.mjs\n";
 // Filled from the reviewed, committed policy helper.  A changed helper is a
 // governance change and must be reviewed before structured commits resume.
-export const REVIEWED_POLICY_SHA256 = "feb91de96c7a23ad89421e0a9bebe8282a339d522081809505a26d65710797ba";
+export const REVIEWED_POLICY_SHA256 = "e051fa3873aff3299b30590a3d6c54a901cbff31dbeafcd625e9c69cf6a42b2f";
 
 export async function assertReviewedHooks(repoRoot, signal) {
   const hookPath = path.join(repoRoot, ".githooks", "pre-commit");

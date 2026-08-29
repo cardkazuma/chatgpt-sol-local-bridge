@@ -224,7 +224,7 @@ binds in the runtime. `git_commit` requires `core.hooksPath=.githooks`, an
 executable exact hook, and the reviewed policy hash:
 
 ```text
-feb91de96c7a23ad89421e0a9bebe8282a339d522081809505a26d65710797ba
+e051fa3873aff3299b30590a3d6c54a901cbff31dbeafcd625e9c69cf6a42b2f
 ```
 
 The policy rejects staged sensitive/ignored paths, staged symlinks, and

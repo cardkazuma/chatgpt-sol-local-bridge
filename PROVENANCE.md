@@ -23,7 +23,7 @@ Review hashes:
 
 ```text
 package-lock.json                         37fbf72f726a888ac8dde223b542ef533123a9ef1ecd9a32159ec55cef05ea67
-scripts/pre-commit-policy.mjs             feb91de96c7a23ad89421e0a9bebe8282a339d522081809505a26d65710797ba
+scripts/pre-commit-policy.mjs             e051fa3873aff3299b30590a3d6c54a901cbff31dbeafcd625e9c69cf6a42b2f
 .githooks/pre-commit                      d4293a6592e095195fbdbce202055053d043fc5d26a45b680205bfa3fc45b373
 ```
 
