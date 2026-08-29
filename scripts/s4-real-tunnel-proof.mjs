@@ -28,6 +28,7 @@ const disabledTools = [
 
 const tunnelId = process.env.S4_TUNNEL_ID || "";
 const credentialFile = process.env.S4_CREDENTIAL_FILE || "";
+const caBundle = process.env.S4_CA_BUNDLE || "";
 const releaseDir = process.env.S4_TUNNEL_RELEASE_DIR || "";
 const tunnelLinuxBinary = process.env.S4_TUNNEL_CLIENT_LINUX_BIN || path.join(releaseDir, "linux", "tunnel-client");
 const tunnelLinuxAsset = process.env.S4_TUNNEL_CLIENT_LINUX_ASSET || path.join(releaseDir, "linux.zip");
@@ -165,6 +166,7 @@ try {
 function validateInputs() {
   assert(/^tunnel_[A-Za-z0-9_-]+$/.test(tunnelId), "S4_TUNNEL_ID must be a tunnel_ identifier supplied locally");
   assert(credentialFile, "S4_CREDENTIAL_FILE must point to a temporary 0600 env file");
+  assert(caBundle, "S4_CA_BUNDLE must point to the temporary host trust bundle");
   assert(!process.env.CONTROL_PLANE_API_KEY, "CONTROL_PLANE_API_KEY must not be present in the proof harness environment");
   assert(!process.env.OPENAI_API_KEY, "OPENAI_API_KEY must not be present in the proof harness environment");
   const resolved = fs.realpathSync(credentialFile);
@@ -180,6 +182,11 @@ function validateInputs() {
   assert.equal(lines[0].slice(0, separator), "CONTROL_PLANE_API_KEY", "S4_CREDENTIAL_FILE has an unexpected key name");
   assert(separator > 0 && lines[0].slice(separator + 1).length > 0, "S4_CREDENTIAL_FILE contains an empty runtime key");
   assert(!/[\r\0]/.test(lines[0].slice(separator + 1)), "runtime key contains an unsupported control character");
+  const resolvedCa = fs.realpathSync(caBundle);
+  const caStat = fs.statSync(resolvedCa);
+  assert(caStat.isFile(), "S4_CA_BUNDLE must be a regular file");
+  assert.equal(caStat.mode & 0o077, 0, "S4_CA_BUNDLE must not be group/world accessible");
+  assert(isWithin(resolvedCa, fs.realpathSync(os.tmpdir())), "S4_CA_BUNDLE must be under the OS temporary directory");
 }
 
 function validateTunnelClient() {
@@ -327,7 +334,9 @@ function createTunnelContainer() {
     "--tmpfs", `/home/tunnel:rw,noexec,nosuid,nodev,size=32m,uid=${proofUid},gid=${proofGid},mode=700`,
     "--mount", `type=bind,src=${tunnelLinuxBinary},dst=/opt/tunnel-client,readonly`,
     "--mount", `type=bind,src=${profileFile},dst=/run/tunnel/profile.yaml,readonly`,
+    "--mount", `type=bind,src=${caBundle},dst=/run/tunnel/macos-system-roots.pem,readonly`,
     "--env-file", credentialFile, "--env", "HOME=/home/tunnel", "--env", "TMPDIR=/tmp",
+    "--env", "SSL_CERT_FILE=/run/tunnel/macos-system-roots.pem",
     "--env", `S4_RELAY_AUTH_HEADER=Bearer ${relayToken}`,
     sidecarImage, "/opt/tunnel-client", "run", "--profile-file", "/run/tunnel/profile.yaml",
     "--log.format", "json", "--log.level", "info",
@@ -388,6 +397,8 @@ function assertTunnelBoundary(value) {
   assert.equal((value.HostConfig.CapDrop || []).includes("ALL"), true);
   assert.equal((value.Mounts || []).some((mount) => mount.Type === "volume"), false);
   assert.equal((value.Mounts || []).some((mount) => mount.Destination === "/workspace/repo" || mount.Destination === "/transport"), false);
+  assert.equal((value.Mounts || []).filter((mount) => mount.Destination === "/run/tunnel/macos-system-roots.pem").length, 1);
+  assert((value.Config.Env || []).some((entry) => entry === "SSL_CERT_FILE=/run/tunnel/macos-system-roots.pem"));
   assert((value.Config.Env || []).some((entry) => entry.startsWith("CONTROL_PLANE_API_KEY=")));
   assert((value.Config.Env || []).some((entry) => entry.startsWith("S4_RELAY_AUTH_HEADER=")));
   assert.equal((value.NetworkSettings?.Networks?.[privateNetworkName] != null), true);

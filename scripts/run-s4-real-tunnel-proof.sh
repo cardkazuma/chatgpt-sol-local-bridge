@@ -5,6 +5,7 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 NODE_TMP_DIR="$(node -p "require('node:os').tmpdir()")"
 TMP_DIR="$(mktemp -d "$NODE_TMP_DIR/bridge-s4-credentials.XXXXXX")"
 CREDENTIAL_FILE="$TMP_DIR/control-plane.env"
+CA_BUNDLE="$TMP_DIR/macos-system-roots.pem"
 TTY_STATE=""
 
 cleanup() {
@@ -23,6 +24,9 @@ case "$TUNNEL_ID" in
   *) printf '%s\n' "invalid tunnel id" >&2; exit 2 ;;
 esac
 
+security find-certificate -a -p /System/Library/Keychains/SystemRootCertificates.keychain > "$CA_BUNDLE"
+chmod 0600 "$CA_BUNDLE"
+
 printf 'Runtime API key (input hidden): ' >&2
 TTY_STATE="$(stty -g < /dev/tty)"
 stty -echo < /dev/tty
@@ -37,6 +41,7 @@ unset API_KEY
 set +e
 S4_TUNNEL_ID="$TUNNEL_ID" \
 S4_CREDENTIAL_FILE="$CREDENTIAL_FILE" \
+S4_CA_BUNDLE="$CA_BUNDLE" \
 npm --prefix "$REPO_DIR" run s4:real-tunnel-proof
 status=$?
 set -e
