@@ -24,7 +24,7 @@ const governance = {
 if (!isWorker) try {
   prepareSource();
   assert.throws(() => new DisposableWorkspaceManager({ root: path.join(repo, "unsafe-sessions"), source, protectedPaths }), /normal user's home|protected checkout/);
-  assert.throws(() => new DisposableWorkspaceManager({ root: path.join(base, "safe"), source: repo, protectedPaths }), /protected checkout/);
+  assert.throws(() => new DisposableWorkspaceManager({ root: path.join(base, "safe"), source: repo, protectedPaths }), /normal user's home|protected checkout/);
   assert.throws(() => new DisposableWorkspaceManager({ root: "/volume1/docker/bridge-sessions", source, protectedPaths }), /volume1\/docker/);
 
   const manager = new DisposableWorkspaceManager({ root: managerRoot, source, governance, protectedPaths, staleAfterMs });

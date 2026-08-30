@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-const SESSION_ID = /^s3-[a-z0-9]+-[0-9a-f]{16}$/;
+const SESSION_ID = /^[a-z][a-z0-9-]*-[a-z0-9]+-[0-9a-f]{16}$/;
 const FORBIDDEN_ROOTS = ["/Volumes", "/volume1/docker"];
 const FORBIDDEN_COMPONENTS = new Set([
   ".storage",
@@ -21,26 +21,43 @@ const FORBIDDEN_BASENAMES = new Set([
 ]);
 
 export class DisposableWorkspaceManager {
-  constructor({ root, source, governance = {}, protectedPaths = [], staleAfterMs = 15 * 60_000 } = {}) {
+  constructor({
+    root,
+    source,
+    governance = {},
+    protectedPaths = [],
+    staleAfterMs = 15 * 60_000,
+    sessionPrefix = "s3",
+    branchPrefix = `bridge/${sessionPrefix}`,
+    allowHomeRoot = false,
+    readOnly = false,
+  } = {}) {
     if (!root || !path.isAbsolute(root)) throw new Error("disposable workspace root must be an absolute path");
-    if (!source) throw new Error("disposable workspace source is required");
+    if (!source && !readOnly) throw new Error("disposable workspace source is required");
     if (!Number.isFinite(staleAfterMs) || staleAfterMs <= 0) throw new Error("staleAfterMs must be positive");
+    if (!/^[a-z][a-z0-9-]*$/.test(sessionPrefix)) throw new Error("disposable session prefix is invalid");
+    if (!/^bridge\/[a-z][a-z0-9-]*$/.test(branchPrefix)) throw new Error("disposable branch prefix is invalid");
     this.root = path.resolve(root);
-    this.source = validateSource(source, protectedPaths);
+    this.source = source ? validateSource(source, protectedPaths) : null;
     this.governance = { ...governance };
     this.protectedPaths = protectedPaths.map((item) => path.resolve(item));
     this.staleAfterMs = staleAfterMs;
+    this.sessionPrefix = sessionPrefix;
+    this.branchPrefix = branchPrefix;
+    this.readOnly = readOnly;
+    this.sessionIdPattern = new RegExp(`^${escapeRegExp(sessionPrefix)}-[a-z0-9]+-[0-9a-f]{16}$`);
     this.sessionsRoot = path.join(this.root, "sessions");
     this.stateRoot = path.join(this.root, "manager-state");
     this.gitHome = path.join(this.root, "git-home");
-    assertSafeManagerRoot(this.root, this.protectedPaths);
+    assertSafeManagerRoot(this.root, this.protectedPaths, { allowHomeRoot });
     this.ensureRoots();
   }
 
   create() {
+    if (!this.source) throw new Error("disposable workspace source is required for create");
     this.reapStale();
-    const sessionId = makeSessionId();
-    const branch = `bridge/s3/${sessionId}`;
+    const sessionId = makeSessionId(this.sessionPrefix);
+    const branch = `${this.branchPrefix}/${sessionId}`;
     const workspacePath = path.join(this.sessionsRoot, sessionId);
     const statePath = path.join(this.stateRoot, `${sessionId}.json`);
     const record = {
@@ -79,7 +96,7 @@ export class DisposableWorkspaceManager {
 
   refresh(sessionId) {
     const current = this.readRecord(sessionId);
-    assertOwnedRecord(current, this.sessionsRoot, this.stateRoot);
+    assertOwnedRecord(current, this.sessionsRoot, this.stateRoot, this.sessionPrefix, this.branchPrefix);
     const incoming = path.join(this.sessionsRoot, `${sessionId}.incoming-${crypto.randomBytes(8).toString("hex")}`);
     const retired = path.join(this.sessionsRoot, `${sessionId}.retired-${crypto.randomBytes(8).toString("hex")}`);
     const refreshStatePath = path.join(this.stateRoot, `${sessionId}.refresh-${crypto.randomBytes(8).toString("hex")}.json`);
@@ -125,7 +142,7 @@ export class DisposableWorkspaceManager {
 
   touch(sessionId) {
     const record = this.readRecord(sessionId);
-    assertOwnedRecord(record, this.sessionsRoot, this.stateRoot);
+    assertOwnedRecord(record, this.sessionsRoot, this.stateRoot, this.sessionPrefix, this.branchPrefix);
     const next = { ...record, heartbeatAt: new Date().toISOString(), pid: process.pid };
     writeJson(record.statePath, next);
     return next;
@@ -133,7 +150,7 @@ export class DisposableWorkspaceManager {
 
   destroy(sessionId) {
     const record = this.readRecord(sessionId);
-    assertOwnedRecord(record, this.sessionsRoot, this.stateRoot);
+    assertOwnedRecord(record, this.sessionsRoot, this.stateRoot, this.sessionPrefix, this.branchPrefix);
     removeOwnedPath(record.workspacePath, this.sessionsRoot);
     fs.rmSync(record.statePath, { force: true });
     return { sessionId, destroyed: true };
@@ -147,7 +164,7 @@ export class DisposableWorkspaceManager {
       let record;
       try {
         record = JSON.parse(fs.readFileSync(statePath, "utf8"));
-        assertOwnedState(record, this.sessionsRoot, this.stateRoot, statePath);
+        assertOwnedState(record, this.sessionsRoot, this.stateRoot, statePath, this.sessionPrefix, this.branchPrefix);
       } catch {
         continue;
       }
@@ -166,7 +183,7 @@ export class DisposableWorkspaceManager {
       if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
       try {
         const record = JSON.parse(fs.readFileSync(path.join(this.stateRoot, entry.name), "utf8"));
-        assertOwnedState(record, this.sessionsRoot, this.stateRoot, path.join(this.stateRoot, entry.name));
+        assertOwnedState(record, this.sessionsRoot, this.stateRoot, path.join(this.stateRoot, entry.name), this.sessionPrefix, this.branchPrefix);
         removeOwnedPath(record.workspacePath, this.sessionsRoot);
         fs.rmSync(record.statePath, { force: true });
         reapSessionTransients(record.sessionId, this.sessionsRoot);
@@ -179,7 +196,7 @@ export class DisposableWorkspaceManager {
   }
 
   readRecord(sessionId) {
-    if (!SESSION_ID.test(sessionId)) throw new Error(`invalid session id: ${sessionId}`);
+    if (!this.sessionIdPattern.test(sessionId)) throw new Error(`invalid session id: ${sessionId}`);
     const statePath = path.join(this.stateRoot, `${sessionId}.json`);
     if (!fs.existsSync(statePath)) throw new Error(`unknown disposable session: ${sessionId}`);
     const record = JSON.parse(fs.readFileSync(statePath, "utf8"));
@@ -188,6 +205,7 @@ export class DisposableWorkspaceManager {
   }
 
   cloneAndPrepare(workspacePath, branch) {
+    if (!this.source) throw new Error("disposable workspace source is required for clone");
     if (fs.existsSync(workspacePath)) throw new Error(`workspace destination already exists: ${workspacePath}`);
     git(["clone", "--no-local", "--no-hardlinks", "--origin", "source", this.source, workspacePath], this.root, this.gitEnv());
     try {
@@ -246,6 +264,7 @@ function validateSource(source, protectedPaths) {
     if (parsed.protocol === "file:") {
       if (parsed.hostname && parsed.hostname !== "localhost") throw new Error("file source URL must be local");
       const localPath = fs.realpathSync(decodeURIComponent(parsed.pathname));
+      if (isWithin(localPath, os.homedir())) throw new Error("disposable workspace source may not be inside the normal user's home");
       for (const protectedPath of protectedPaths) {
         if (isWithin(localPath, path.resolve(protectedPath)) || isWithin(path.resolve(protectedPath), localPath)) {
           throw new Error(`source overlaps protected checkout: ${localPath}`);
@@ -256,6 +275,9 @@ function validateSource(source, protectedPaths) {
   }
   if (!path.isAbsolute(value)) throw new Error("local disposable source must be an absolute path");
   const resolved = fs.realpathSync(value);
+  if (isWithin(resolved, os.homedir())) {
+    throw new Error("disposable workspace source may not be inside the normal user's home");
+  }
   for (const protectedPath of protectedPaths) {
     if (isWithin(resolved, path.resolve(protectedPath)) || isWithin(path.resolve(protectedPath), resolved)) {
       throw new Error(`source overlaps protected checkout: ${resolved}`);
@@ -264,10 +286,12 @@ function validateSource(source, protectedPaths) {
   return resolved;
 }
 
-function assertSafeManagerRoot(root, protectedPaths) {
+function assertSafeManagerRoot(root, protectedPaths, { allowHomeRoot = false } = {}) {
   const resolved = path.resolve(root);
   if (resolved === path.parse(resolved).root) throw new Error("disposable workspace root may not be a filesystem root");
-  if (isWithin(resolved, os.homedir()) || isWithin(os.homedir(), resolved)) {
+  const appSupportRoot = path.join(os.homedir(), "Library", "Application Support", "ChatGPT Local Bridge");
+  const homeRootAllowed = allowHomeRoot && isWithin(resolved, appSupportRoot) && resolved !== appSupportRoot;
+  if ((isWithin(resolved, os.homedir()) || isWithin(os.homedir(), resolved)) && !homeRootAllowed) {
     throw new Error("disposable workspace root may not be inside or above the normal user's home");
   }
   for (const forbidden of FORBIDDEN_ROOTS) {
@@ -368,17 +392,18 @@ function writeJson(filePath, value) {
   fs.renameSync(temporary, filePath);
 }
 
-function assertOwnedRecord(record, sessionsRoot, stateRoot) {
+function assertOwnedRecord(record, sessionsRoot, stateRoot, sessionPrefix = "s3", branchPrefix = "bridge/s3") {
   if (!record || record.version !== 1 || record.kind !== "workspace" || !SESSION_ID.test(record.sessionId)) throw new Error("invalid disposable session state");
-  if (record.branch !== `bridge/s3/${record.sessionId}`) throw new Error("disposable session branch identity mismatch");
+  if (!new RegExp(`^${escapeRegExp(sessionPrefix)}-[a-z0-9]+-[0-9a-f]{16}$`).test(record.sessionId)) throw new Error("disposable session namespace mismatch");
+  if (record.branch !== `${branchPrefix}/${record.sessionId}`) throw new Error("disposable session branch identity mismatch");
   if (path.resolve(record.statePath) !== path.join(path.resolve(stateRoot), `${record.sessionId}.json`)) throw new Error("disposable state path escaped manager state");
   if (path.resolve(record.workspacePath) !== path.join(path.resolve(sessionsRoot), record.sessionId)) throw new Error("disposable workspace path escaped manager sessions");
   if (record.ownerUid !== currentUid()) throw new Error("disposable session owner mismatch");
 }
 
-function assertOwnedState(record, sessionsRoot, stateRoot, expectedStatePath = null) {
+function assertOwnedState(record, sessionsRoot, stateRoot, expectedStatePath = null, sessionPrefix = "s3", branchPrefix = "bridge/s3") {
   if (record?.kind === "refresh") {
-    if (record.version !== 1 || !SESSION_ID.test(record.sessionId) || record.ownerUid !== currentUid()) throw new Error("invalid disposable refresh state");
+    if (record.version !== 1 || !SESSION_ID.test(record.sessionId) || !new RegExp(`^${escapeRegExp(sessionPrefix)}-[a-z0-9]+-[0-9a-f]{16}$`).test(record.sessionId) || record.ownerUid !== currentUid()) throw new Error("invalid disposable refresh state");
     const statePath = path.resolve(record.statePath);
     if (path.dirname(statePath) !== path.resolve(stateRoot) || !path.basename(statePath).startsWith(`${record.sessionId}.refresh-`)) throw new Error("disposable refresh state escaped manager state");
     if (expectedStatePath && statePath !== path.resolve(expectedStatePath)) throw new Error("disposable refresh state identity mismatch");
@@ -388,7 +413,7 @@ function assertOwnedState(record, sessionsRoot, stateRoot, expectedStatePath = n
     return;
   }
   if (expectedStatePath && path.resolve(record.statePath) !== path.resolve(expectedStatePath)) throw new Error("disposable state identity mismatch");
-  assertOwnedRecord(record, sessionsRoot, stateRoot);
+  assertOwnedRecord(record, sessionsRoot, stateRoot, sessionPrefix, branchPrefix);
 }
 
 function reapSessionTransients(sessionId, sessionsRoot) {
@@ -434,8 +459,8 @@ function assertNoSymlinkAncestors(target) {
   }
 }
 
-function makeSessionId() {
-  return `s3-${Date.now().toString(36)}-${crypto.randomBytes(8).toString("hex")}`;
+function makeSessionId(prefix = "s3") {
+  return `${prefix}-${Date.now().toString(36)}-${crypto.randomBytes(8).toString("hex")}`;
 }
 
 function isWithin(candidate, parent) {

@@ -272,6 +272,10 @@ export function toolEnvironment(overrides = {}) {
     : { ...process.env, ...(overrides || {}) };
   if (TOOL_ENV_INHERIT_SECRETS && !HARDENED_CONTAINER) return env;
   for (const key of Object.keys(env)) {
+    if (/^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)$/.test(key)) {
+      delete env[key];
+      continue;
+    }
     if (TOOL_ENV_ALLOWLIST.has(key)) continue;
     if (/(?:^|_)(?:TOKEN|SECRET|PASSWORD|PASSWD|KEY|API_KEY|PRIVATE_KEY|CREDENTIALS?)(?:$|_)/i.test(key)
       || ["MCP_TOKEN", "CONTROL_PLANE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"].includes(key)) {
