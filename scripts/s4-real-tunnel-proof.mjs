@@ -7,6 +7,10 @@ import { once } from "node:events";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DisposableWorkspaceManager } from "./disposable-workspace.mjs";
+import {
+  parseTunnelControlPlaneHealthReport,
+  parseTunnelReadinessResponse,
+} from "./s4-readiness.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sidecarImage = "node:22.14.0-bookworm-slim@sha256:745403dc46b5ab4c998502b07a12cbf020cf2c30645427a68ec0718f02d647de";
@@ -66,6 +70,9 @@ let tunnelProcess;
 let credentialRemoved = false;
 let bridgeDigest;
 let tunnelReadyCount = 0;
+let controlPlaneHealthAssertionCount = 0;
+let lastTunnelReadinessDiagnostic = "no /readyz response observed";
+let lastControlPlaneHealthDiagnostic = "no control-plane health report observed";
 
 try {
   validateInputs();
@@ -112,9 +119,26 @@ try {
   assertTunnelBoundary(dockerInspect(tunnelName));
   await waitFor(() => relayNetworkReachable(), "private relay network path");
   tunnelProcess = startProcess("docker", ["start", "-a", tunnelName], dockerEnv);
-  await waitFor(() => tunnelReady(tunnelName), "real OpenAI Secure MCP Tunnel readiness", tunnelProcess, 180_000);
+  await waitFor(
+    () => tunnelReady(tunnelName),
+    "real OpenAI Secure MCP Tunnel readiness",
+    tunnelProcess,
+    180_000,
+    () => `last /readyz response: ${lastTunnelReadinessDiagnostic}`,
+  );
   tunnelReadyCount += 1;
-  runDocker(["exec", tunnelName, "/opt/tunnel-client", "doctor", "--profile-file", "/run/tunnel/profile.yaml", "--explain"], dockerEnv);
+  await waitFor(
+    () => tunnelControlPlaneReady(tunnelName),
+    "successful tunnel-client control-plane poll",
+    tunnelProcess,
+    60_000,
+    () => `last health report: ${lastControlPlaneHealthDiagnostic}`,
+  );
+  controlPlaneHealthAssertionCount += 1;
+  runDocker([
+    "exec", tunnelName, "/opt/tunnel-client", "doctor", "--profile-file", "/run/tunnel/profile.yaml",
+    "--health.listen-addr", "127.0.0.1:0", "--explain",
+  ], dockerEnv);
 
   assertBridgeProcessCredentialIsolation();
   console.log(JSON.stringify({
@@ -138,6 +162,10 @@ try {
     },
     localCatalog,
     disabledToolsAbsent: disabledTools,
+    controlPlaneHealth: {
+      command: "tunnel-client health --json --require-control-plane-poll",
+      pass: true,
+    },
     credentialPlane: {
       runtimeKey: "tunnel-client container only",
       relayBearer: "relay and tunnel-client only",
@@ -156,6 +184,7 @@ try {
     pass: true,
     tunnel: redactIdentifier(tunnelId),
     tunnelReadyCount,
+    controlPlaneHealthAssertionCount,
     chatgptProof,
     localCatalog: expectedTools,
     cleanup: "will run in finally",
@@ -448,8 +477,24 @@ async function assertTunnelReconnect() {
   await waitFor(() => !containerRunning(tunnelName), "tunnel-client termination");
   await waitFor(() => tunnelProcess?.exitCode != null, "attached tunnel-client termination");
   tunnelProcess = startProcess("docker", ["start", "-a", tunnelName], dockerEnv);
-  await waitFor(() => tunnelReady(tunnelName), "tunnel-client reconnect", tunnelProcess, 180_000);
+  lastTunnelReadinessDiagnostic = "no /readyz response observed after reconnect";
+  await waitFor(
+    () => tunnelReady(tunnelName),
+    "tunnel-client reconnect",
+    tunnelProcess,
+    180_000,
+    () => `last /readyz response: ${lastTunnelReadinessDiagnostic}`,
+  );
   tunnelReadyCount += 1;
+  lastControlPlaneHealthDiagnostic = "no control-plane health report observed after reconnect";
+  await waitFor(
+    () => tunnelControlPlaneReady(tunnelName),
+    "successful tunnel-client control-plane poll after reconnect",
+    tunnelProcess,
+    60_000,
+    () => `last health report: ${lastControlPlaneHealthDiagnostic}`,
+  );
+  controlPlaneHealthAssertionCount += 1;
 }
 
 function verifyChatGptFixture(workspacePath) {
@@ -488,9 +533,36 @@ function socketReadyInRelay() {
 
 function tunnelReady(name) {
   if (!containerRunning(name)) return false;
-  const probe = "const r=await fetch('http://127.0.0.1:8080/readyz'); const b=await r.json(); process.stdout.write(JSON.stringify({status:r.status,ready:b.ready===true})); if (r.status !== 200 || b.ready !== true) process.exit(3);";
+  const probe = "const r=await fetch('http://127.0.0.1:8080/readyz'); const body=await r.text(); process.stdout.write(JSON.stringify({status:r.status,body}));";
   const result = run("docker", ["exec", name, "node", "--input-type=module", "-e", probe], dockerEnv);
-  return result.status === 0;
+  if (result.status !== 0) {
+    lastTunnelReadinessDiagnostic = `probe failed: ${sanitize(result.output)}`;
+    return false;
+  }
+  let response;
+  try {
+    response = JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1));
+  } catch {
+    throw new Error(`malformed tunnel-client /readyz probe output: ${sanitize(result.output)}`);
+  }
+  const parsed = parseTunnelReadinessResponse(response.status, response.body);
+  lastTunnelReadinessDiagnostic = parsed.diagnostic;
+  return parsed.ready;
+}
+
+function tunnelControlPlaneReady(name) {
+  const result = run("docker", [
+    "exec", name, "/opt/tunnel-client", "health", "--port", "8080", "--json", "--require-control-plane-poll",
+  ], dockerEnv);
+  let report;
+  try {
+    report = JSON.parse(result.stdout);
+  } catch {
+    throw new Error(`tunnel-client health --json returned malformed output: ${sanitize(result.output)}`);
+  }
+  const parsed = parseTunnelControlPlaneHealthReport(result.status, report);
+  lastControlPlaneHealthDiagnostic = parsed.diagnostic;
+  return parsed.ready;
 }
 
 function relayReady() {
@@ -555,14 +627,15 @@ function startProcess(command, args, env) {
   return child;
 }
 
-async function waitFor(predicate, label, child = null, timeoutMs = 30_000) {
+async function waitFor(predicate, label, child = null, timeoutMs = 30_000, diagnostic = null) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (predicate()) return;
     if (child?.exitCode != null) throw new Error(`${label} failed because the process exited ${child.exitCode}: ${child.output()}`);
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  throw new Error(`timed out waiting for ${label}${child ? `: ${child.output()}` : ""}`);
+  const evidence = diagnostic?.() || (child ? child.output() : "");
+  throw new Error(`timed out waiting for ${label}${evidence ? `: ${evidence}` : ""}`);
 }
 
 async function cleanup() {
