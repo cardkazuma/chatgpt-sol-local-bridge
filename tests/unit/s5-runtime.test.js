@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { S5Runtime, makeResources } from "../../scripts/s5-runtime.mjs";
 
 const base = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-s5-runtime-test-"));
@@ -47,3 +49,145 @@ test("runtime state persistence excludes the relay bearer", () => {
   const persisted = JSON.parse(fs.readFileSync(runtime.stateFile, "utf8"));
   assert.equal("relayToken" in persisted.resources, false);
 });
+
+test("pending waitFor keeps a process alive until its predicate succeeds", async () => {
+  const runtimeModule = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../scripts/s5-runtime.mjs");
+  const started = Date.now();
+  const child = await runNode([
+    `import { S5Runtime } from ${JSON.stringify(runtimeModule)};`,
+    "const runtime = Object.create(S5Runtime.prototype);",
+    "let ready = false;",
+    "setTimeout(() => { ready = true; }, 40).unref();",
+    "await runtime.waitFor(() => ready, 'fixture predicate', 500);",
+    "process.stdout.write(JSON.stringify({ resolved: true }));",
+  ].join("\n"));
+  assert.equal(child.code, 0, child.stderr);
+  assert.equal(child.signal, null);
+  assert.deepEqual(JSON.parse(child.stdout), { resolved: true });
+  assert.ok(Date.now() - started >= 200, `waitFor completed too early: ${Date.now() - started}ms`);
+});
+
+test("waitFor honors its configured timeout and leaves no timer after rejection", async () => {
+  const runtimeModule = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../scripts/s5-runtime.mjs");
+  const timeoutMs = 80;
+  const started = Date.now();
+  const child = await runNode([
+    `import { S5Runtime } from ${JSON.stringify(runtimeModule)};`,
+    "const runtime = Object.create(S5Runtime.prototype);",
+    "try { await runtime.waitFor(() => false, 'fixture timeout', 80); }",
+    "catch (error) { process.stdout.write(JSON.stringify({ message: error.message })); }",
+  ].join("\n"));
+  const elapsed = Date.now() - started;
+  assert.equal(child.code, 0, child.stderr);
+  assert.equal(child.signal, null);
+  assert.deepEqual(JSON.parse(child.stdout), { message: "timed out waiting for fixture timeout" });
+  assert.ok(elapsed >= timeoutMs, `timeout completed too early: ${elapsed}ms`);
+  assert.ok(elapsed < 600, `timeout exceeded its polling window: ${elapsed}ms`);
+});
+
+test("start cannot report success while runtime state is still starting", async () => {
+  const runtimeRoot = path.join(base, "starting-runtime");
+  const managerRoot = path.join(base, "chatgpt-local-bridge-s5-starting-manager");
+  const stateRoot = path.join(managerRoot, "manager-state");
+  fs.mkdirSync(stateRoot, { recursive: true, mode: 0o700 });
+  const sessionId = "s5-starting-0123456789abcdef";
+  const session = { sessionId, state: "active", branch: `bridge/s5/${sessionId}`, sourceCommit: "fixture", historyCommits: 1, coreHooksPath: ".githooks", workspacePath: path.join(base, "starting-workspace") };
+  const manager = {
+    stateRoot,
+    reapStale: () => [],
+    create: () => session,
+    readRecord: () => session,
+    destroy: () => ({ sessionId, destroyed: true }),
+  };
+  let phaseAtStartupFailure;
+  let cleaned = false;
+  const runtime = new S5Runtime({
+    runtimeRoot,
+    managerRoot,
+    platform: "darwin",
+    securityBin: security,
+    spawnSupervisor: false,
+  });
+  runtime.createManager = () => manager;
+  runtime.resolveTunnelInputs = () => ({ caBundle: "" });
+  runtime.validateStaticPreflight = () => {};
+  runtime.writeTrustBundle = () => {};
+  runtime.writeProfile = () => {};
+  runtime.writeComposeOverride = () => {};
+  runtime.createDockerResources = () => {};
+  runtime.containerRunning = () => true;
+  runtime.bridgeSocketReady = () => true;
+  runtime.bridgeReady = () => true;
+  runtime.assertBridgeBoundary = () => {};
+  runtime.startRelay = () => {};
+  runtime.relayReady = () => true;
+  runtime.assertRelayBoundary = () => {};
+  runtime.mcpStartupProbe = () => {
+    phaseAtStartupFailure = JSON.parse(fs.readFileSync(runtime.stateFile, "utf8")).phase;
+    throw new Error("fixture startup failure");
+  };
+  runtime.cleanupRuntime = async (resources) => { cleaned = Boolean(resources); };
+  await assert.rejects(
+    () => runtime.start({ source: path.join(base, "starting-source"), tunnelId: "tunnel_s5_fixture" }),
+    /S5 start blocked: fixture startup failure/,
+  );
+  assert.equal(phaseAtStartupFailure, "starting");
+  assert.equal(cleaned, true);
+  assert.equal(fs.existsSync(runtime.stateFile), false);
+});
+
+test("start failure remains fail-closed and cleans its newly-created session", async () => {
+  const runtimeRoot = path.join(base, "failure-runtime");
+  const managerRoot = path.join(base, "chatgpt-local-bridge-s5-failure-manager");
+  const stateRoot = path.join(managerRoot, "manager-state");
+  fs.mkdirSync(stateRoot, { recursive: true, mode: 0o700 });
+  const sessionId = "s5-failure-0123456789abcdef";
+  const session = { sessionId, state: "active", branch: `bridge/s5/${sessionId}`, sourceCommit: "fixture", historyCommits: 1, coreHooksPath: ".githooks", workspacePath: path.join(base, "failure-workspace") };
+  let destroyed = 0;
+  let cleaned = false;
+  const manager = {
+    stateRoot,
+    reapStale: () => [],
+    create: () => session,
+    readRecord: () => session,
+    destroy: () => { destroyed += 1; return { sessionId, destroyed: true }; },
+  };
+  const runtime = new S5Runtime({
+    runtimeRoot,
+    managerRoot,
+    platform: "darwin",
+    securityBin: security,
+    spawnSupervisor: false,
+  });
+  runtime.createManager = () => manager;
+  runtime.resolveTunnelInputs = () => ({ caBundle: "" });
+  runtime.validateStaticPreflight = () => { throw new Error("fixture preflight failure"); };
+  runtime.cleanupRuntime = async (resources) => { cleaned = Boolean(resources); };
+  await assert.rejects(
+    () => runtime.start({ source: path.join(base, "failure-source"), tunnelId: "tunnel_s5_fixture" }),
+    /S5 start blocked: fixture preflight failure/,
+  );
+  assert.equal(cleaned, true);
+  assert.equal(destroyed, 1);
+  assert.equal(fs.existsSync(runtime.stateFile), false);
+  assert.equal(fs.readdirSync(stateRoot).length, 0);
+});
+
+function runNode(source, timeoutMs = 2_000) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", source], {
+      cwd: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../.."),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const killTimer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", (error) => { clearTimeout(killTimer); reject(error); });
+    child.on("close", (code, signal) => {
+      clearTimeout(killTimer);
+      resolve({ code, signal, stdout, stderr });
+    });
+  });
+}

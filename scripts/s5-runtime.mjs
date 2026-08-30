@@ -815,12 +815,20 @@ export class S5Runtime {
   waitFor(predicate, label, timeoutMs = 30_000) {
     const deadline = Date.now() + timeoutMs;
     return new Promise((resolve, reject) => {
+      let timer;
+      const finish = (callback) => {
+        if (timer) {
+          clearTimeout(timer);
+          timer = undefined;
+        }
+        callback();
+      };
       const tick = () => {
-        if (Date.now() >= deadline) return reject(new Error(`timed out waiting for ${label}`));
+        if (Date.now() >= deadline) return finish(() => reject(new Error(`timed out waiting for ${label}`)));
         let value = false;
-        try { value = predicate(); } catch (error) { return reject(error); }
-        if (value) return resolve();
-        setTimeout(tick, 250).unref?.();
+        try { value = predicate(); } catch (error) { return finish(() => reject(error)); }
+        if (value) return finish(resolve);
+        timer = setTimeout(tick, 250);
       };
       tick();
     });
