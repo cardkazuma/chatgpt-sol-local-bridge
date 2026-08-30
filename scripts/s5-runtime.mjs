@@ -740,7 +740,15 @@ export class S5Runtime {
   }
 
   readState() {
-    return readJson(this.stateFile);
+    if (!fs.existsSync(this.stateFile)) return null;
+    let state;
+    try {
+      state = JSON.parse(fs.readFileSync(this.stateFile, "utf8"));
+    } catch {
+      throw new Error("S5 runtime state is unreadable; refusing to start, stop, or recover blindly");
+    }
+    if (!state || typeof state !== "object" || Array.isArray(state)) throw new Error("S5 runtime state is invalid");
+    return state;
   }
 
   writeState(state) {
