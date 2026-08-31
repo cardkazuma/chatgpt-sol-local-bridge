@@ -8,6 +8,7 @@ import readline from "node:readline";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DisposableWorkspaceManager } from "./disposable-workspace.mjs";
+import { prepareManualChatFixture } from "./s5-manual-chat-fixture.mjs";
 import { appendAudit, auditSize, clearAudit } from "./s5-audit.mjs";
 import {
   credentialProbe,
@@ -333,6 +334,25 @@ export class S5Runtime {
     const record = manager.create();
     this.audit("workspace.create", record.sessionId, "ok", { historyCommits: record.historyCommits });
     return publicSession(record);
+  }
+
+  workspacePrepareManualChat() {
+    this.ensureRuntimeRoot();
+    const prepared = prepareManualChatFixture({
+      managerRoot: this.managerRoot,
+      repoRoot: this.repoRoot,
+      governance: {
+        hookFile: path.join(this.repoRoot, ".githooks", "pre-commit"),
+        policyFile: path.join(this.repoRoot, "scripts", "pre-commit-policy.mjs"),
+      },
+      protectedPaths: protectedPaths(this.repoRoot),
+    });
+    this.audit("workspace.prepare-chat", prepared.session.sessionId, "ok", {
+      historyCommits: prepared.baseline.historyCommits,
+      baseCommit: prepared.baseline.baseCommit,
+      baselineProjectTest: prepared.baseline.baselineProjectTest,
+    });
+    return { ...publicSession(prepared.session), baseline: prepared.baseline };
   }
 
   workspaceList() {
@@ -1240,10 +1260,11 @@ async function main() {
   if (command === "recover") { console.log(JSON.stringify(await runtime.recover(), null, 2)); return; }
   if (command === "rollback") { console.log(JSON.stringify(await runtime.rollback(), null, 2)); return; }
   if (command === "workspace" && subcommand === "create") { console.log(JSON.stringify(runtime.workspaceCreate(args.source), null, 2)); return; }
+  if (command === "workspace" && subcommand === "prepare-chat") { console.log(JSON.stringify(runtime.workspacePrepareManualChat(), null, 2)); return; }
   if (command === "workspace" && subcommand === "list") { console.log(JSON.stringify(runtime.workspaceList(), null, 2)); return; }
   if (command === "workspace" && subcommand === "destroy") { console.log(JSON.stringify(runtime.workspaceDestroy(args.session), null, 2)); return; }
   if (command === "supervise") { await runtime.supervise(args._[1] || runtime.stateFile); return; }
-  throw new Error("usage: s5-runtime.mjs {keychain install|tunnel configure|start|status|doctor|stop|recover|rollback|workspace create|workspace list|workspace destroy|supervise}");
+  throw new Error("usage: s5-runtime.mjs {keychain install|tunnel configure|start|status|doctor|stop|recover|rollback|workspace create|workspace prepare-chat|workspace list|workspace destroy|supervise}");
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

@@ -11,6 +11,7 @@ The controller commands are:
 node scripts/s5-runtime.mjs keychain install
 node scripts/s5-runtime.mjs tunnel configure
 node scripts/s5-runtime.mjs workspace create --source /absolute/path/to/disposable-fixture
+node scripts/s5-runtime.mjs workspace prepare-chat
 node scripts/s5-runtime.mjs workspace list
 node scripts/s5-runtime.mjs start --source /absolute/path/to/disposable-fixture
 node scripts/s5-runtime.mjs status
@@ -42,6 +43,16 @@ manager rejects canonical checkouts, normal-user home sources, NAS paths,
 secret/runtime filenames, symlinks, and inherited Git credentials. Session
 state uses the `s5-` namespace and is reaped only when its heartbeat is stale
 and its recorded PID is no longer alive.
+
+For the ordinary-Chat proof, use `workspace prepare-chat` rather than a
+general-purpose source checkout. It creates a fresh reviewed fixture source
+under the S5 manager root, then verifies the new workspace is a non-shallow,
+non-hardlinked clone with no forbidden material, a clean tracked worktree, the
+reviewed hook, a tracked deterministic `workflow-proof.txt` baseline, and a
+passing `project_test` equivalent before returning its session and base commit.
+The user must make the sole proof mutation: append one line to that tracked
+file, test, inspect the diff, stage only that file, and make a hook-enforced
+local commit.
 
 The host controller records bounded, redacted lifecycle events under its private
 runtime root. The runtime state omits the relay bearer; temporary credential and
