@@ -31,6 +31,25 @@ test("credential custody reads one fixed item and exposes it only to the tunnel 
   assert.equal(fs.readdirSync(tempRoot).length, 0);
 });
 
+test("credential custody retains the controller input channel for Keychain confirmation", async () => {
+  const interactiveSecurity = path.join(base, "interactive-security");
+  fs.writeFileSync(interactiveSecurity, [
+    "#!/bin/sh",
+    "[ \"$1\" = find-generic-password ] || exit 1",
+    "[ \"$2\" = -s ] && [ \"$3\" = com.cardkazuma.chatgpt-local-bridge.runtime ] && [ \"$4\" = -a ] && [ \"$5\" = tunnel-client ] || exit 1",
+    "if [ -n \"$6\" ] && [ \"$6\" != -w ]; then exit 1; fi",
+    "if [ \"$6\" = -w ]; then printf '%s\\n' 'confirmation-fixture'; fi",
+    "exit 0",
+    "",
+  ].join("\n"), { mode: 0o700 });
+  fs.chmodSync(interactiveSecurity, 0o700);
+  const tempRoot = path.join(base, "interactive-tmp");
+  await withTunnelClientEnvFile({ tempRoot, securityBin: interactiveSecurity, platform: "darwin" }, async (envFile) => {
+    assert.equal(fs.readFileSync(envFile, "utf8"), "CONTROL_PLANE_API_KEY=confirmation-fixture\n");
+  });
+  assert.equal(fs.readdirSync(tempRoot).length, 0);
+});
+
 test("credential installation uses the dedicated item identity", () => {
   assert.deepEqual(installKeychainItem({ securityBin: security, platform: "darwin" }), {
     stored: true,

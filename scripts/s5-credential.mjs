@@ -58,7 +58,10 @@ export async function withTunnelClientEnvFile({ tempRoot, securityBin = SECURITY
     "-s", KEYCHAIN_SERVICE,
     "-a", KEYCHAIN_ACCOUNT,
     "-w",
-  ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  // Preserve the foreground controller's terminal for Keychain access-control
+  // confirmation. stdout remains private and is never inherited, because it
+  // contains the runtime key when the read succeeds.
+  ], { encoding: "utf8", stdio: ["inherit", "pipe", "pipe"] });
   if (result.status !== 0) throw new Error("dedicated Keychain runtime item could not be read");
   let secret = String(result.stdout || "").replace(/\r?\n$/, "");
   if (!secret || /[\r\n\0]/.test(secret)) throw new Error("dedicated Keychain item returned an invalid value");
