@@ -324,12 +324,16 @@ export class S5Runtime {
       pass: passed,
       checks,
       runtime: state ? this.status({ inspectLive: true }) : { running: false },
-      policy: {
-        noLaunchAgent: true,
-        noPush: true,
-        noCodexRun: true,
-        noNasOrDockerAuthorityInBridge: true,
-      },
+      policy: this.policySummary(),
+    };
+  }
+
+  policySummary() {
+    return {
+      noLaunchAgent: true,
+      noPush: true,
+      noCodexRun: true,
+      noNasOrDockerAuthorityInBridge: true,
     };
   }
 

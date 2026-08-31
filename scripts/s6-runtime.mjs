@@ -50,6 +50,16 @@ export class S6Runtime extends S5Runtime {
   runtimeMarkerContent() { return "chatgpt-sol-local-bridge S6 runtime root\n"; }
   runtimeMarkerName() { return ".s6-runtime-root"; }
 
+  policySummary() {
+    return {
+      noLaunchAgent: true,
+      fixedBranchPublishOnly: true,
+      noArbitraryGitRemoteAuthority: true,
+      noCodexRun: true,
+      noNasOrDockerAuthorityInBridge: true,
+    };
+  }
+
   async start(options = {}) {
     if (options.source && options.source !== S6_REPOSITORY_URL) throw new Error("S6 start accepts no arbitrary source; use the fixed homelab repository");
     return super.start({ ...options, source: S6_REPOSITORY_URL });

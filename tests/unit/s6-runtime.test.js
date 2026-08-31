@@ -19,6 +19,14 @@ test("S6 runtime is fixed to the homelab source and exact 28-tool catalog", () =
   assert.equal(runtime.source, undefined);
   assert.equal(S6_EXPECTED_TOOLS.length, 28);
   assert.deepEqual(runtime.expectedTools(), S6_EXPECTED_TOOLS);
+  assert.deepEqual(runtime.policySummary(), {
+    noLaunchAgent: true,
+    fixedBranchPublishOnly: true,
+    noArbitraryGitRemoteAuthority: true,
+    noCodexRun: true,
+    noNasOrDockerAuthorityInBridge: true,
+  });
+  assert.equal(runtime.policySummary().noPush, undefined);
   assert.deepEqual(runtime.readCatalogForCheck(), []);
   assert.throws(() => runtime.workspaceCreate("https://github.com/other/repo.git"), /fixed to the homelab repository/);
   assert.throws(() => runtime.workspacePrepareManualChat(), /does not use a local fixture source/);
