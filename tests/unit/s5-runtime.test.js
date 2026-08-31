@@ -66,6 +66,22 @@ test("status adopts the validated manager root recorded by an active runtime", (
   assert.equal(reader.managerRoot, recordedManagerRoot);
 });
 
+test("status accepts a persisted macOS per-user temporary manager root", () => {
+  const runtimeRoot = path.join(base, "persisted-darwin-manager-runtime");
+  const recordedManagerRoot = "/var/folders/zz/s5-runtime-fixture/T/chatgpt-local-bridge-s5-recorded";
+  const writer = new S5Runtime({
+    runtimeRoot,
+    managerRoot: recordedManagerRoot,
+    platform: "darwin",
+    securityBin: security,
+    spawnSupervisor: false,
+  });
+  writer.ensureRuntimeRoot();
+  writer.writeState({ version: 1, kind: "s5-runtime", phase: "starting", sessionId: "s5-test-0123456789abcdef", managerRoot: recordedManagerRoot, resources: makeResources() });
+  const reader = new S5Runtime({ runtimeRoot, platform: "darwin", securityBin: security, spawnSupervisor: false });
+  assert.equal(reader.managerRoot, recordedManagerRoot);
+});
+
 test("the tunnel identifier is ephemeral tunnel-plane input, not profile state", () => {
   const runtime = new S5Runtime({
     runtimeRoot: path.join(base, "tunnel-id-runtime"),
@@ -147,6 +163,26 @@ test("control-plane health keeps a bounded redacted retry diagnostic", () => {
   assert.equal(runtime.tunnelControlPlaneReady("s5-test-0123456789ab-tunnel"), false);
   assert.match(runtime.lastTunnelControlPlaneDiagnostic, /control-plane-poll=fail/);
   assert.doesNotMatch(runtime.lastTunnelControlPlaneDiagnostic, /tunnel_s5_sensitive/);
+});
+
+test("tunnel failure logs retain only bounded redacted messages", () => {
+  const runtime = new S5Runtime({
+    runtimeRoot: path.join(base, "tunnel-log-runtime"),
+    managerRoot: path.join(os.tmpdir(), `chatgpt-local-bridge-s5-tunnel-log-${process.pid}`),
+    platform: "darwin",
+    securityBin: security,
+    spawnSupervisor: false,
+  });
+  runtime.docker = {
+    run: () => ({ stdout: [
+      JSON.stringify({ level: "error", msg: "control plane returned 401 for tunnel_s5_sensitive with Bearer secret-value" }),
+      "not-json",
+    ].join("\n") }),
+  };
+  const diagnostic = runtime.tunnelLogDiagnostic("s5-test-0123456789ab-tunnel");
+  assert.match(diagnostic, /401/);
+  assert.doesNotMatch(diagnostic, /tunnel_s5_sensitive|secret-value/);
+  assert.ok(diagnostic.length <= 480);
 });
 
 test("pending waitFor keeps a process alive until its predicate succeeds", async () => {

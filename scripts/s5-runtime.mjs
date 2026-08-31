@@ -168,6 +168,7 @@ export class S5Runtime {
       });
       return this.status({ inspectLive: true });
     } catch (error) {
+      const tunnelDiagnostic = state?.resources?.tunnelName ? this.tunnelLogDiagnostic(state.resources.tunnelName) : "";
       if (state) {
         state.phase = "failed";
         state.updatedAt = new Date().toISOString();
@@ -181,6 +182,7 @@ export class S5Runtime {
       this.audit("runtime.start", session?.sessionId || null, "failed", {
         reason: safeFailure(error),
         controlPlaneDiagnostic: this.lastTunnelControlPlaneDiagnostic || "not observed",
+        tunnelDiagnostic: tunnelDiagnostic || "not observed",
       });
       this.removeStateArtifacts(state);
       throw new Error(`S5 start blocked: ${safeFailure(error)}`);
@@ -343,8 +345,7 @@ export class S5Runtime {
     }
     this.audit("runtime.rollback", null, "ok", { destroyedCount: destroyed.length });
     clearAudit(this.auditRoot);
-    const managerParent = isWithin(this.managerRoot, os.tmpdir()) ? os.tmpdir() : "/tmp";
-    removeExactDirectory(this.managerRoot, managerParent, "chatgpt-local-bridge-s5-");
+    removeExactDirectory(this.managerRoot, path.dirname(this.managerRoot), "chatgpt-local-bridge-s5-");
     for (const directory of [this.auditRoot, this.tempRoot]) {
       if (fs.existsSync(directory)) removeExactDirectory(directory, this.runtimeRoot, path.basename(directory));
     }
@@ -603,6 +604,17 @@ export class S5Runtime {
     const parsed = parseTunnelControlPlaneHealthReport(result.status, report);
     this.lastTunnelControlPlaneDiagnostic = sanitizeOutput(parsed.diagnostic).slice(0, 240);
     return parsed.ready;
+  }
+
+  tunnelLogDiagnostic(name) {
+    const result = this.docker.run(["logs", "--tail", "80", name]);
+    const messages = String(result.stdout || "").split(/\r?\n/).flatMap((line) => {
+      try {
+        const entry = JSON.parse(line);
+        return typeof entry?.msg === "string" ? [entry.msg] : [];
+      } catch { return []; }
+    });
+    return sanitizeOutput(messages.join(" | ").replace(/\s+/g, " ")).slice(0, 480);
   }
 
   assertBridgeBoundary(resources) {
@@ -933,9 +945,11 @@ function assertSafeRuntimeRoot(root) {
 function assertSafeS5ManagerRoot(root) {
   const resolved = path.resolve(root);
   const darwinTmpAlias = process.platform === "darwin" && (isWithin(resolved, "/tmp") || isWithin(resolved, "/private/tmp"));
-  if ((!isWithin(resolved, os.tmpdir()) && !darwinTmpAlias) || !path.basename(resolved).startsWith("chatgpt-local-bridge-s5-")) {
+  const darwinUserTemp = process.platform === "darwin" && /^\/var\/folders\/[^/]+\/[^/]+\/T(?:\/|$)/.test(resolved);
+  if ((!isWithin(resolved, os.tmpdir()) && !darwinTmpAlias && !darwinUserTemp) || !path.basename(resolved).startsWith("chatgpt-local-bridge-s5-")) {
     throw new Error("S5 manager root must be a dedicated directory under the OS temporary directory");
   }
+  assertNoSymlinkAncestors(resolved);
 }
 
 function protectedPaths(repoRoot) {
