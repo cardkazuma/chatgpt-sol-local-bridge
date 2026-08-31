@@ -125,7 +125,7 @@ export class S5Runtime {
       this.audit("runtime.start", session.sessionId, "blocked", { phase: "preflight" });
       this.validateStaticPreflight({ ...staticInputs, source, session, resources });
       this.writeTrustBundle(staticInputs.caBundle);
-      this.writeProfile(tunnelId);
+      this.writeProfile();
       this.writeComposeOverride();
       this.createDockerResources(state, session);
       await this.waitFor(() => this.containerRunning(resources.bridgeName), "bridge container");
@@ -148,7 +148,7 @@ export class S5Runtime {
         platform: this.platform,
       }, async (credentialFile) => {
         appendLine(credentialFile, "S5_RELAY_AUTH_HEADER", `Bearer ${resources.relayToken}`);
-        this.createTunnel(resources, staticInputs, credentialFile);
+        this.createTunnel(resources, staticInputs, credentialFile, tunnelId);
       });
       this.assertTunnelBoundary(resources);
       await this.startTunnelAndWait(resources, state);
@@ -449,7 +449,8 @@ export class S5Runtime {
     }
   }
 
-  createTunnel(resources, inputs, credentialFile) {
+  createTunnel(resources, inputs, credentialFile, tunnelId) {
+    validateTunnelId(tunnelId);
     this.docker.checked([
       "create", "--name", resources.tunnelName, "--platform", "linux/amd64", "--user", `${currentUid()}:${currentGid()}`, "--read-only",
       "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--pids-limit", "96", "--memory", "256m",
@@ -459,7 +460,7 @@ export class S5Runtime {
       "--mount", `type=bind,src=${inputs.tunnelClientBin},dst=/opt/tunnel-client,readonly`,
       "--mount", `type=bind,src=${this.profileFile},dst=/run/tunnel/profile.yaml,readonly`,
       "--mount", `type=bind,src=${path.join(this.runtimeRoot, "trust-roots.pem")},dst=/run/tunnel/macos-system-roots.pem,readonly`,
-      "--env-file", credentialFile, "--env", "HOME=/home/tunnel", "--env", "TMPDIR=/tmp",
+      "--env-file", credentialFile, "--env", `CONTROL_PLANE_TUNNEL_ID=${tunnelId}`, "--env", "HOME=/home/tunnel", "--env", "TMPDIR=/tmp",
       "--env", "SSL_CERT_FILE=/run/tunnel/macos-system-roots.pem", SIDECAR_IMAGE, "/opt/tunnel-client", "run",
       "--profile-file", "/run/tunnel/profile.yaml", "--log.format", "json", "--log.level", "info",
     ]);
@@ -625,6 +626,7 @@ export class S5Runtime {
     if ((value.Mounts || []).some((mount) => mount.Type === "volume" || mount.Destination === "/workspace/repo" || mount.Destination === "/transport")) throw new Error("tunnel received bridge/workspace storage");
     if (!(value.Mounts || []).some((mount) => mount.Destination === "/run/tunnel/profile.yaml")) throw new Error("tunnel profile mount missing");
     if (!(value.Config?.Env || []).some((entry) => entry.startsWith("CONTROL_PLANE_API_KEY="))) throw new Error("tunnel runtime key was not injected into tunnel plane");
+    if (!(value.Config?.Env || []).some((entry) => entry.startsWith("CONTROL_PLANE_TUNNEL_ID=tunnel_"))) throw new Error("tunnel identifier was not injected into tunnel plane");
     if (!(value.Config?.Env || []).some((entry) => entry.startsWith("S5_RELAY_AUTH_HEADER="))) throw new Error("tunnel relay credential missing");
     const networks = Object.keys(value.NetworkSettings?.Networks || {}).sort();
     if (networks.join(",") !== [resources.egressNetworkName, resources.privateNetworkName].sort().join(",")) throw new Error("tunnel network topology changed");
@@ -667,9 +669,9 @@ export class S5Runtime {
     };
   }
 
-  writeProfile(tunnelId) {
+  writeProfile() {
     const content = [
-      "config_version: 1", "control_plane:", '  base_url: "https://api.openai.com"', `  tunnel_id: "${tunnelId}"`,
+      "config_version: 1", "control_plane:", '  base_url: "https://api.openai.com"',
       '  api_key: "env:CONTROL_PLANE_API_KEY"', "health:", '  listen_addr: "127.0.0.1:8080"', "admin_ui:",
       "  open_browser: false", "log:", "  level: info", "  format: json", "mcp:", "  server_urls:",
       "    - channel: main", '      url: "http://relay:8081/mcp"', "  extra_headers:",

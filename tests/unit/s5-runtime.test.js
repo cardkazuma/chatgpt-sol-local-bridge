@@ -50,6 +50,31 @@ test("runtime state persistence excludes the relay bearer", () => {
   assert.equal("relayToken" in persisted.resources, false);
 });
 
+test("the tunnel identifier is ephemeral tunnel-plane input, not profile state", () => {
+  const runtime = new S5Runtime({
+    runtimeRoot: path.join(base, "tunnel-id-runtime"),
+    managerRoot: path.join(os.tmpdir(), `chatgpt-local-bridge-s5-tunnel-id-${process.pid}`),
+    platform: "darwin",
+    securityBin: security,
+    spawnSupervisor: false,
+  });
+  runtime.ensureRuntimeRoot();
+  runtime.writeProfile();
+  assert.doesNotMatch(fs.readFileSync(runtime.profileFile, "utf8"), /tunnel_id|CONTROL_PLANE_TUNNEL_ID/);
+
+  const calls = [];
+  runtime.docker = { checked: (args) => calls.push(args) };
+  runtime.createTunnel(
+    { tunnelName: "s5-test-0123456789ab-tunnel", privateNetworkName: "s5-test-0123456789ab-private" },
+    { tunnelClientBin: "/tmp/tunnel-client" },
+    "/tmp/tunnel.env",
+    "tunnel_s5_ephemeral_fixture",
+  );
+  assert.equal(calls.length, 2);
+  assert(calls[0].includes("CONTROL_PLANE_TUNNEL_ID=tunnel_s5_ephemeral_fixture"));
+  assert.equal(fs.readFileSync(runtime.profileFile, "utf8").includes("tunnel_s5_ephemeral_fixture"), false);
+});
+
 test("pending waitFor keeps a process alive until its predicate succeeds", async () => {
   const runtimeModule = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../scripts/s5-runtime.mjs");
   const started = Date.now();
