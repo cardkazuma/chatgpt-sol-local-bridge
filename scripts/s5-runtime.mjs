@@ -30,6 +30,7 @@ const TUNNEL_VERSION = "0.0.13";
 const TUNNEL_COMMIT = "4b5267f823be0b046bb883aacb51603cfde3a0ea";
 const TUNNEL_BINARY_SHA256 = "7a686d9e156dfe461d9751de6d0e7296c14040a4b3638f1b1527a2fa153e2196";
 const TUNNEL_ASSET_SHA256 = "e71f37b424126513173d5e3590687c0b5ccf6e8ef3fba900104d1f8c60dad906";
+const ALLOWED_TUNNEL_ENV_NAMES = new Set(["S5_RELAY_AUTH_HEADER"]);
 export const EXPECTED_TOOLS = Object.freeze([
   "bridge_instructions", "workspace_list", "workspace_open", "workspace_tree", "workspace_snapshot",
   "read_file", "search_text", "write_file", "apply_patch", "edit_file", "git_status", "git_diff", "git_log",
@@ -146,7 +147,7 @@ export class S5Runtime {
         securityBin: this.securityBin,
         platform: this.platform,
       }, async (credentialFile) => {
-        appendLine(credentialFile, `S5_RELAY_AUTH_HEADER=Bearer ${resources.relayToken}`);
+        appendLine(credentialFile, "S5_RELAY_AUTH_HEADER", `Bearer ${resources.relayToken}`);
         this.createTunnel(resources, staticInputs, credentialFile);
       });
       this.assertTunnelBoundary(resources);
@@ -974,9 +975,15 @@ function writeEnvFile(filePath, values) {
   writePrivateFile(filePath, `${Object.entries(values).map(([key, value]) => `${key}=${value}`).join("\n")}\n`);
 }
 
-function appendLine(filePath, line) {
-  if (!/^[A-Z0-9_]+=\S+$/.test(line)) throw new Error("credential env assignment is invalid");
-  fs.appendFileSync(filePath, `${line}\n`, { encoding: "utf8" });
+export function appendLine(filePath, name, value) {
+  if (!ALLOWED_TUNNEL_ENV_NAMES.has(name)
+    || !/^[A-Z_][A-Z0-9_]*$/.test(name)
+    || typeof value !== "string"
+    || value.length === 0
+    || /[\r\n\0]/.test(value)) {
+    throw new Error("credential env assignment is invalid");
+  }
+  fs.appendFileSync(filePath, `${name}=${value}\n`, { encoding: "utf8" });
   fs.chmodSync(filePath, 0o600);
 }
 
