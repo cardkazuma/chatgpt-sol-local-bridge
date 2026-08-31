@@ -33,7 +33,11 @@ import { initializeS6Broker } from "./lib/s6-broker-client.js";
 
 // Control-plane and GitHub credential material, if inherited from an outer
 // launcher, must never enter the bridge process or its tool children.
-for (const key of ["CONTROL_PLANE_API_KEY", "S6_GITHUB_TOKEN_FILE", "S6_BROKER_CAPABILITY", "GITHUB_TOKEN", "GH_TOKEN"]) delete process.env[key];
+for (const key of [
+  "CONTROL_PLANE_API_KEY", "S6_GITHUB_TOKEN_FILE", "S6_BROKER_CAPABILITY",
+  "GITHUB_TOKEN", "GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GITLAB_TOKEN", "BITBUCKET_TOKEN",
+  "GIT_ASKPASS", "GIT_SSH_COMMAND", "SSH_AUTH_SOCK",
+]) delete process.env[key];
 
 // S6 registers an in-memory capability with the per-session host broker before
 // the MCP server becomes available. The capability is never placed in the

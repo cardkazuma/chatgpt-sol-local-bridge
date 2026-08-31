@@ -270,7 +270,11 @@ export function toolEnvironment(overrides = {}) {
   const env = HARDENED_CONTAINER
     ? hardenedEnvironment(overrides)
     : { ...process.env, ...(overrides || {}) };
-  for (const key of ["S6_BROKER_SOCKET", "S6_BROKER_CAPABILITY", "S6_GITHUB_TOKEN_FILE"]) delete env[key];
+  for (const key of [
+    "S6_BROKER_SOCKET", "S6_BROKER_CAPABILITY", "S6_GITHUB_TOKEN_FILE",
+    "GITHUB_TOKEN", "GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GITLAB_TOKEN", "BITBUCKET_TOKEN",
+    "GIT_ASKPASS", "GIT_SSH_COMMAND", "SSH_AUTH_SOCK",
+  ]) delete env[key];
   if (TOOL_ENV_INHERIT_SECRETS && !HARDENED_CONTAINER) return env;
   for (const key of Object.keys(env)) {
     if (/^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)$/.test(key)) {

@@ -254,7 +254,8 @@ export class S6GitHubBroker {
     if (this.gitOutput(["branch", "--show-current"], workspacePath).trim() !== branch) throw new Error("S6 HEAD is not attached to the generated branch");
     if (this.gitOutput(["rev-parse", "--is-shallow-repository"], workspacePath).trim() !== "false") throw new Error("S6 workspace is shallow");
     if (this.gitOutput(["remote"], workspacePath).trim().split(/\r?\n/).filter(Boolean).join("\n") !== S6_REMOTE_NAME) throw new Error("S6 workspace has an unexpected remote");
-    if (this.gitOutput(["config", "--local", "--get", `remote.${S6_REMOTE_NAME}.url`], workspacePath).trim() !== S6_REPOSITORY_URL) throw new Error("S6 origin is not the fixed canonical URL");
+    const urls = this.gitOutput(["config", "--local", "--get-all", `remote.${S6_REMOTE_NAME}.url`], workspacePath).trim().split(/\r?\n/).filter(Boolean);
+    if (urls.length !== 1 || urls[0] !== S6_REPOSITORY_URL) throw new Error("S6 origin is not the single fixed canonical URL");
     if (this.gitStatus(["config", "--local", "--get-all", `remote.${S6_REMOTE_NAME}.pushurl`], workspacePath).status === 0) throw new Error("S6 origin pushurl is not allowed");
     const fetch = this.gitOutput(["config", "--local", "--get-all", `remote.${S6_REMOTE_NAME}.fetch`], workspacePath).trim().split(/\r?\n/).filter(Boolean);
     if (fetch.length !== 1 || fetch[0] !== S6_STANDARD_FETCH_REFSPEC) throw new Error("S6 origin fetch refspec is not the standard clone refspec");
@@ -473,7 +474,8 @@ export class S6GitHubBroker {
     if (fs.realpathSync(workspacePath) !== fs.realpathSync(path.resolve(workspacePath))) throw new Error("S6 clone path escaped manager root");
     if (this.gitOutput(["rev-parse", "--is-shallow-repository"], workspacePath).trim() !== "false") throw new Error("S6 GitHub clone is shallow");
     if (this.gitOutput(["remote"], workspacePath).trim() !== S6_REMOTE_NAME) throw new Error("S6 GitHub clone has an unexpected remote");
-    if (this.gitOutput(["config", "--local", "--get", "remote.origin.url"], workspacePath).trim() !== S6_REPOSITORY_URL) throw new Error("S6 GitHub clone origin identity mismatch");
+    const urls = this.gitOutput(["config", "--local", "--get-all", "remote.origin.url"], workspacePath).trim().split(/\r?\n/).filter(Boolean);
+    if (urls.length !== 1 || urls[0] !== S6_REPOSITORY_URL) throw new Error("S6 GitHub clone origin identity mismatch");
     const pushurl = this.gitStatus(["config", "--local", "--get-all", "remote.origin.pushurl"], workspacePath);
     if (pushurl.status === 0) throw new Error("S6 GitHub clone contains a pushurl");
   }

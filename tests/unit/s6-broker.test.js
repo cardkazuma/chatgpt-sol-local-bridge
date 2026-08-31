@@ -135,6 +135,18 @@ test("S6 broker independently validates a clean linear graph and rejects bypasse
   assert.deepEqual(await broker.publishBranch(), { ...evidence, status: "already-published" });
   const restarted = makeBroker(session.sessionId, true);
   assert.deepEqual(await restarted.publishBranch(), { ...evidence, status: "already-published" });
+  broker.writePublishedState(first, session.expectedBaseCommit, "publishing");
+  assert.deepEqual(broker.recoverPublish(), { recovered: true, state: "published", commit: first });
+
+  runGit(["config", "--local", "--add", "remote.origin.url", "https://github.com/other/repo.git"], session.workspacePath, gitEnv);
+  assert.throws(() => broker.validateLocalPublishState({ requireAttestations: false }), /single fixed canonical URL/);
+  runGit(["config", "--local", "--unset-all", "remote.origin.url"], session.workspacePath, gitEnv);
+  runGit(["config", "--local", "remote.origin.url", S6_REPOSITORY_URL], session.workspacePath, gitEnv);
+
+  runGit(["switch", "--no-guess", "main"], session.workspacePath, gitEnv);
+  assert.throws(() => broker.validateLocalPublishState({ requireAttestations: false }), /not attached to the generated branch/);
+  runGit(["switch", "--no-guess", session.branch], session.workspacePath, gitEnv);
+
   fs.writeFileSync(path.join(session.workspacePath, ".git", "shallow"), `${session.expectedBaseCommit}\n`, { mode: 0o600 });
   assert.throws(() => broker.validateLocalPublishState({ requireAttestations: false }), /workspace is shallow/);
   fs.rmSync(path.join(session.workspacePath, ".git", "shallow"), { force: true });
@@ -151,6 +163,18 @@ test("S6 broker independently validates a clean linear graph and rejects bypasse
   assert.throws(() => broker.validateLocalPublishState({ requireAttestations: false }), /repository-ignored path/);
   runGit(["reset", "--hard", first], session.workspacePath, gitEnv);
 
+  runGit(["reset", "--hard", session.expectedBaseCommit], session.workspacePath, gitEnv);
+  const diverged = commitWithReviewedHook(session, "diverged.txt", "non-fast-forward\n", "S6 non-fast-forward candidate");
+  assert.ok(broker.attestCommit(diverged).attested);
+  await assert.rejects(() => broker.publishBranch(), /not a fast-forward/);
+  runGit(["reset", "--hard", first], session.workspacePath, gitEnv);
+
+  fs.symlinkSync("README.md", path.join(session.workspacePath, "symlink.txt"));
+  runGit(["add", "--", "symlink.txt"], session.workspacePath, gitEnv);
+  runGit(["commit", "--no-verify", "-m", "symlink candidate"], session.workspacePath, gitEnv);
+  assert.throws(() => broker.validateLocalPublishState({ requireAttestations: false }), /symlink tree entry/);
+  runGit(["reset", "--hard", first], session.workspacePath, gitEnv);
+
   fs.mkdirSync(path.join(session.workspacePath, "runtime"), { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(session.workspacePath, "runtime", "secret.log"), "ignored\n", { mode: 0o600 });
   assert.throws(() => broker.validateLocalPublishState({ requireAttestations: false }), /clean worktree.*ignored/);
@@ -163,6 +187,15 @@ test("S6 broker independently validates a clean linear graph and rejects bypasse
 
   manager.destroy(session.sessionId);
   assert.equal(fs.existsSync(path.join(managerRoot, "manager-state", `${session.sessionId}.published.json`)), false);
+
+  const collision = manager.create();
+  const collisionBroker = makeBroker(collision.sessionId, true);
+  remoteSha = "c".repeat(40);
+  const collisionCommit = commitWithReviewedHook(collision, "README.md", "S6 collision\n", "S6 unowned branch collision");
+  assert.ok(collisionBroker.attestCommit(collisionCommit).attested);
+  await assert.rejects(() => collisionBroker.publishBranch(), /branch already exists/);
+  manager.destroy(collision.sessionId);
+  remoteSha = null;
 });
 
 test("S6 broker socket protocol carries no caller-selected target", async () => {
