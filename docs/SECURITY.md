@@ -122,9 +122,15 @@ The bridge container remains `network_mode: none`, credential-free, non-root,
 read-only-rootfs, capability-dropped, and no-new-privileges. A fixed per-session
 Unix socket carries only an in-memory capability and fixed register/attest/
 empty-input publish messages. The host broker is not a shell, HTTP proxy,
-generic Git proxy, or credential helper; candidate hooks are mounted from
-manager-owned external governance and are disabled for credential-bearing Git
-operations.
+generic Git proxy, or credential helper. Its credential-bearing Git subprocesses
+set `core.hooksPath` and `GIT_TEMPLATE_DIR` to separate manager-owned, empty,
+private directories; they also ignore system/global configuration and reject
+repository aliases, filters, credential settings, hook paths, and related Git
+configuration before opening the credential callback. The normal disposable
+workspace still uses the reviewed pre-commit hook for structured local commits.
+The `S6 credential-time Git invocations isolate hooks, templates, and
+repository config` regression exercises malicious repository/template/global
+hooks and configuration under a synthetic credential callback.
 
 The current private personal GitHub repository has no Rulesets or branch
 protection in the available plan. That is an explicit residual, not an

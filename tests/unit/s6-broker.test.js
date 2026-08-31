@@ -4,7 +4,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { DisposableWorkspaceManager } from "../../scripts/disposable-workspace.mjs";
 import {
@@ -82,6 +82,130 @@ test("S6 reuses the reviewed policy and fails closed on sensitive and governance
     assert.match(classifyPublishPath(name).reason, /fail-closed/);
   }
   assert.equal(classifyPublishPath(".env.example").allowed, true);
+});
+
+test("S6 credential-time Git invocations isolate hooks, templates, and repository config", async () => {
+  const isolationBase = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-s6-hook-isolation-"));
+  const isolationManagerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "chatgpt-local-bridge-s6-hook-isolation-"));
+  const workspace = path.join(isolationBase, "workspace");
+  const bareRemote = path.join(isolationBase, "remote.git");
+  const templateRoot = path.join(isolationBase, "template");
+  const markers = {
+    template: path.join(isolationBase, "template-hook-ran"),
+    repository: path.join(isolationBase, "repository-hook-ran"),
+    global: path.join(isolationBase, "global-hook-ran"),
+    helper: path.join(isolationBase, "credential-helper-ran"),
+    askpass: path.join(isolationBase, "repository-askpass-ran"),
+  };
+  const sessionId = "s6-hookproof-0123456789abcdef";
+  const branch = s6BranchForSession(sessionId);
+  const setupHome = path.join(isolationBase, "setup-home");
+  const setupEnv = {
+    PATH: process.env.PATH || "/usr/bin:/bin",
+    HOME: setupHome,
+    XDG_CONFIG_HOME: path.join(setupHome, "config"),
+    LANG: "C",
+    LC_ALL: "C",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_ASKPASS: "/usr/bin/false",
+    GIT_SSH_COMMAND: "/usr/bin/false",
+  };
+  const credentialRoot = path.join(isolationManagerRoot, "credential-test");
+  let credentialCalls = 0;
+  let authServerProcess;
+  try {
+    fs.mkdirSync(path.join(templateRoot, "hooks"), { recursive: true, mode: 0o700 });
+    writeExecutable(path.join(templateRoot, "hooks", "pre-push"), hookScript(markers.template));
+    runGit(["init", "-q", `--initial-branch=${branch}`, `--template=${templateRoot}`, workspace], isolationBase, setupEnv);
+    runGit(["config", "user.name", "S6 Hook Isolation"], workspace, setupEnv);
+    runGit(["config", "user.email", "s6-hook-isolation@example.invalid"], workspace, setupEnv);
+    fs.writeFileSync(path.join(workspace, "README.md"), "hook isolation baseline\n", { mode: 0o600 });
+    runGit(["add", "--", "README.md"], workspace, setupEnv);
+    runGit(["commit", "--no-verify", "-qm", "S6 hook isolation baseline"], workspace, setupEnv);
+    fs.mkdirSync(path.join(workspace, ".githooks"), { recursive: true, mode: 0o700 });
+    writeExecutable(path.join(workspace, ".githooks", "pre-push"), hookScript(markers.repository));
+    const globalHooks = path.join(isolationBase, "global-hooks");
+    fs.mkdirSync(globalHooks, { recursive: true, mode: 0o700 });
+    writeExecutable(path.join(globalHooks, "pre-push"), hookScript(markers.global));
+    const replacementHelper = path.join(isolationBase, "credential-helper");
+    const replacementAskpass = path.join(isolationBase, "repository-askpass");
+    writeExecutable(replacementHelper, hookScript(markers.helper));
+    writeExecutable(replacementAskpass, hookScript(markers.askpass));
+
+    runGit(["remote", "add", "origin", S6_REPOSITORY_URL], workspace, setupEnv);
+    runGit(["config", "--local", "core.hooksPath", S6_GOVERNANCE_HOOKS_PATH], workspace, setupEnv);
+    runGit(["config", "--local", "alias.status", `!${replacementHelper}`], workspace, setupEnv);
+
+    const broker = new S6GitHubBroker({
+      managerRoot: isolationManagerRoot,
+      bridgeRoot: repo,
+      sessionId,
+      platform: "linux",
+      credentialTempRoot: credentialRoot,
+      credentialRunner: (_options, callback) => {
+        credentialCalls += 1;
+        fs.mkdirSync(credentialRoot, { recursive: true, mode: 0o700 });
+        const directory = fs.mkdtempSync(path.join(credentialRoot, "round-"));
+        const tokenFile = path.join(directory, "token");
+        fs.writeFileSync(tokenFile, "offline-hook-isolation-token\n", { mode: 0o600 });
+        try { return callback(tokenFile); } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+      },
+    });
+    const emptyHooks = path.join(isolationManagerRoot, "broker-empty-hooks");
+    const emptyTemplate = path.join(isolationManagerRoot, "broker-empty-template");
+    assert.equal(fs.existsSync(emptyHooks), true, "broker-owned empty hook directory is required");
+    assert.equal(fs.existsSync(emptyTemplate), true, "broker-owned empty template directory is required");
+    assert.deepEqual(fs.readdirSync(emptyHooks), []);
+    assert.deepEqual(fs.readdirSync(emptyTemplate), []);
+    assert.equal(broker.gitEnvironment().GIT_CONFIG_SYSTEM, "/dev/null");
+    assert.equal(broker.gitEnvironment().GIT_CONFIG_GLOBAL, "/dev/null");
+    assert.equal(broker.gitEnvironment().GIT_TEMPLATE_DIR, emptyTemplate);
+    assert.throws(() => broker.validateWorkspaceIdentity(workspace, branch), /alias\.status/);
+    assert.equal(credentialCalls, 0, "repository aliases must be rejected before credential scope");
+    runGit(["config", "--local", "--unset-all", "alias.status"], workspace, setupEnv);
+    runGit(["config", "--local", "filter.evil.clean", `!${replacementHelper}`], workspace, setupEnv);
+    assert.throws(() => broker.validateWorkspaceIdentity(workspace, branch), /filter\.evil\.clean/);
+    assert.equal(credentialCalls, 0, "repository filters must be rejected before credential scope");
+    runGit(["config", "--local", "--unset-all", "filter.evil.clean"], workspace, setupEnv);
+
+    fs.mkdirSync(path.join(isolationManagerRoot, "git-home"), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(isolationManagerRoot, "git-home", ".gitconfig"), `[core]\n\thooksPath = ${globalHooks}\n[credential]\n\thelper = !${replacementHelper}\n`, { mode: 0o600 });
+    runGit(["config", "--local", "credential.helper", `!${replacementHelper}`], workspace, setupEnv);
+    runGit(["config", "--local", "core.askPass", replacementAskpass], workspace, setupEnv);
+
+    const authProbeMarker = path.join(isolationBase, "authentication-probe-reached");
+    authServerProcess = spawn(process.execPath, ["-e", authenticationServerSource(), authProbeMarker], { stdio: ["ignore", "pipe", "pipe"] });
+    const authPort = await waitForChildPort(authServerProcess);
+    runGit(["remote", "set-url", "origin", `http://127.0.0.1:${authPort}/s6.git`], workspace, setupEnv);
+    const authResult = broker.withCredential(({ tokenFile, askpassFile }) => broker.gitStatusWithCredential(["ls-remote", "--heads", "origin"], workspace, { tokenFile, askpassFile }));
+    assert.notEqual(authResult.status, 0, "local authentication probe must not succeed");
+    assert.equal(fs.existsSync(authProbeMarker), true, "local authentication probe was not reached");
+    await stopChild(authServerProcess);
+    authServerProcess = null;
+    assert.equal(fs.existsSync(markers.helper), false, "repository credential helper executed during credential scope");
+    assert.equal(fs.existsSync(markers.askpass), false, "repository askpass executed during credential scope");
+
+    runGit(["init", "--bare", "-q", bareRemote], isolationBase, setupEnv);
+    runGit(["remote", "set-url", "origin", bareRemote], workspace, setupEnv);
+    const firstPush = broker.withCredential(({ tokenFile, askpassFile }) => broker.gitStatusWithCredential(["push", "--porcelain", "origin", `HEAD:refs/heads/${branch}`], workspace, { tokenFile, askpassFile }));
+    assert.equal(firstPush.status, 0, firstPush.stderr || firstPush.stdout);
+    runGit(["config", "--local", "--unset-all", "core.hooksPath"], workspace, setupEnv);
+    fs.appendFileSync(path.join(workspace, "README.md"), "second push\n");
+    runGit(["add", "--", "README.md"], workspace, setupEnv);
+    runGit(["commit", "--no-verify", "-qm", "S6 hook isolation second push"], workspace, setupEnv);
+    const secondPush = broker.withCredential(({ tokenFile, askpassFile }) => broker.gitStatusWithCredential(["push", "--porcelain", "origin", `HEAD:refs/heads/${branch}`], workspace, { tokenFile, askpassFile }));
+    assert.equal(secondPush.status, 0, secondPush.stderr || secondPush.stdout);
+    for (const marker of [markers.repository, markers.template, markers.global]) {
+      assert.equal(fs.existsSync(marker), false, `untrusted hook executed during credential scope: ${path.basename(marker)}`);
+    }
+    assert.equal(fs.readdirSync(credentialRoot).length, 0, "credential callback material was not cleaned");
+  } finally {
+    await stopChild(authServerProcess);
+    fs.rmSync(isolationBase, { recursive: true, force: true });
+    fs.rmSync(isolationManagerRoot, { recursive: true, force: true });
+  }
 });
 
 test("S6 broker independently validates a clean linear graph and rejects bypasses, movement, and governance paths", async () => {
@@ -184,6 +308,26 @@ test("S6 broker independently validates a clean linear graph and rejects bypasse
   assert.match(workflow, /^[0-9a-f]{40}$/);
   assert.throws(() => broker.attestCommit(workflow), /fail-closed governance or automation path/);
   await assert.rejects(() => broker.publishBranch(), /every unpublished commit.*attestation|fail-closed governance/);
+
+  runGit(["reset", "--hard", first], session.workspacePath, gitEnv);
+  const modules = commitWithNoVerify(session, ".gitmodules", "[submodule \"untrusted\"]\n\tpath = untrusted\n\turl = https://example.invalid/untrusted.git\n", "S6 gitmodules candidate");
+  assert.match(modules, /^[0-9a-f]{40}$/);
+  assert.throws(() => broker.validateLocalPublishState({ requireAttestations: false }), /fail-closed governance or automation path/);
+  runGit(["reset", "--hard", first], session.workspacePath, gitEnv);
+  const nested = path.join(session.workspacePath, "untrusted-submodule");
+  fs.mkdirSync(nested, { recursive: true, mode: 0o700 });
+  runGit(["init", "-q", "-b", "main"], nested, gitEnv);
+  runGit(["config", "core.hooksPath", "/dev/null"], nested, gitEnv);
+  runGit(["config", "user.name", "Untrusted Submodule"], nested, gitEnv);
+  runGit(["config", "user.email", "untrusted-submodule@example.invalid"], nested, gitEnv);
+  fs.writeFileSync(path.join(nested, "README.md"), "untrusted nested fixture\n", { mode: 0o600 });
+  runGit(["add", "--", "README.md"], nested, gitEnv);
+  runGit(["commit", "--no-verify", "-qm", "nested fixture"], nested, gitEnv);
+  const nestedHead = readGit(["rev-parse", "HEAD"], nested);
+  runGit(["update-index", "--add", "--cacheinfo", `160000,${nestedHead},untrusted-submodule`], session.workspacePath, gitEnv);
+  runGit(["commit", "--no-verify", "-m", "S6 submodule candidate"], session.workspacePath, gitEnv);
+  assert.throws(() => broker.validateLocalPublishState({ requireAttestations: false }), /submodule tree entry/);
+  runGit(["reset", "--hard", first], session.workspacePath, gitEnv);
 
   manager.destroy(session.sessionId);
   assert.equal(fs.existsSync(path.join(managerRoot, "manager-state", `${session.sessionId}.published.json`)), false);
@@ -322,6 +466,68 @@ function commitWithNoVerify(session, relative, content, message) {
 function writeSource(relative, content) {
   fs.mkdirSync(path.dirname(path.join(source, relative)), { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(source, relative), content, { mode: 0o600 });
+}
+
+function writeExecutable(target, content) {
+  fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(target, content, { encoding: "utf8", mode: 0o700 });
+  fs.chmodSync(target, 0o700);
+}
+
+function hookScript(marker) {
+  return `#!/bin/sh\nset -eu\nprintf '%s\\n' "credential-visible=\${S6_GITHUB_TOKEN_FILE:+yes}" > ${shellQuote(marker)}\n`;
+}
+
+function shellQuote(value) { return `'${String(value).replace(/'/g, `'"'"'`)}'`; }
+
+function authenticationServerSource() {
+  return [
+    'const fs=require("node:fs");',
+    'const http=require("node:http");',
+    'const marker=process.argv[1];',
+    'const server=http.createServer((_request,response)=>{fs.writeFileSync(marker,"reached\\n",{mode:0o600});response.writeHead(401,{"WWW-Authenticate":"Basic realm=s6","Content-Length":"0",Connection:"close"});response.end();});',
+    'server.listen(0,"127.0.0.1",()=>process.stdout.write(String(server.address().port)+"\\n"));',
+    'process.on("SIGTERM",()=>server.close(()=>process.exit(0)));',
+  ].join("");
+}
+
+function waitForChildPort(child) {
+  return new Promise((resolve, reject) => {
+    let output = "";
+    let errors = "";
+    const timeout = setTimeout(() => finish(new Error("local authentication probe did not become ready")), 5_000);
+    const finish = (error, port) => {
+      clearTimeout(timeout);
+      child.stdout?.removeAllListeners("data");
+      child.stderr?.removeAllListeners("data");
+      child.removeAllListeners("exit");
+      if (error) reject(error); else resolve(port);
+    };
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => {
+      output += chunk;
+      const match = output.match(/^([0-9]+)\r?\n/);
+      if (!match) return;
+      const port = Number(match[1]);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) finish(new Error("local authentication probe returned an invalid port"));
+      else finish(null, port);
+    });
+    child.stderr?.on("data", (chunk) => { errors += chunk; });
+    child.once("exit", (code) => finish(new Error(`local authentication probe exited before readiness (${code ?? "unknown"}): ${errors.trim()}`)));
+  });
+}
+
+async function stopChild(child) {
+  if (!child || child.exitCode !== null || child.killed) return;
+  await new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch {}
+      resolve();
+    }, 2_000);
+    child.once("exit", () => { clearTimeout(timeout); resolve(); });
+    try { child.kill("SIGTERM"); } catch { clearTimeout(timeout); resolve(); }
+  });
 }
 
 function runGit(args, cwd, env = gitEnv) {

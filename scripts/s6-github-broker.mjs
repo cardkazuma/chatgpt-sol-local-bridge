@@ -91,13 +91,21 @@ export class S6GitHubBroker {
     this.stateRoot = path.join(this.managerRoot, "manager-state");
     this.governanceRoot = path.join(this.managerRoot, "governance");
     this.gitHome = path.join(this.managerRoot, "git-home");
+    this.brokerHooksRoot = path.join(this.managerRoot, "broker-empty-hooks");
+    this.brokerTemplateRoot = path.join(this.managerRoot, "broker-empty-template");
     this.attestedShas = new Set();
     assertSafeBrokerRoot(this.managerRoot);
+    this.ensureGitIsolationRoots();
     assertS6RepositoryAlias();
   }
 
   source() { return S6_REPOSITORY_URL; }
   repositoryAlias() { return S6_REPOSITORY_ALIAS; }
+
+  ensureGitIsolationRoots() {
+    ensurePrivateEmptyDirectory(this.brokerHooksRoot, "S6 broker hook directory");
+    ensurePrivateEmptyDirectory(this.brokerTemplateRoot, "S6 broker template directory");
+  }
 
   /**
    * Controller-owned materialization callback for DisposableWorkspaceManager.
@@ -263,7 +271,7 @@ export class S6GitHubBroker {
     if (hookPath !== S6_GOVERNANCE_HOOKS_PATH) throw new Error("S6 core.hooksPath is not the manager-mounted reviewed hook path");
     const keys = this.gitOutput(["config", "--local", "--name-only", "--list"], workspacePath).split(/\r?\n/).filter(Boolean);
     for (const key of keys) {
-      if (/^(?:credential\.|url\.|include|submodule\.|filter\.|http\.|protocol\.|diff\.|difftool\.|mergetool\.|core\.(?:sshCommand|gitProxy|askPass|attributesFile|fsmonitor|fsmonitorHook)|remote\.(?!origin\.(?:url|fetch)$)|remote\.origin\.pushurl)/i.test(key)) {
+      if (/^(?:alias\.|credential\.|url\.|include|submodule\.|filter\.|http\.|protocol\.|diff\.|difftool\.|mergetool\.|core\.(?:sshCommand|gitProxy|askPass|attributesFile|fsmonitor|fsmonitorHook)|remote\.(?!origin\.(?:url|fetch)$)|remote\.origin\.pushurl)/i.test(key)) {
         throw new Error(`S6 repository-controlled Git config is not allowed: ${key}`);
       }
     }
@@ -379,6 +387,7 @@ export class S6GitHubBroker {
   }
 
   gitEnvironment({ tokenFile = "", askpassFile = "" } = {}) {
+    this.ensureGitIsolationRoots();
     const env = {
       PATH: process.env.PATH || "/usr/bin:/bin",
       HOME: this.gitHome,
@@ -391,6 +400,7 @@ export class S6GitHubBroker {
       GIT_TERMINAL_PROMPT: "0",
       GIT_ASKPASS: askpassFile || "/usr/bin/false",
       GIT_SSH_COMMAND: "/usr/bin/false",
+      GIT_TEMPLATE_DIR: this.brokerTemplateRoot,
       GIT_OPTIONAL_LOCKS: "0",
     };
     if (tokenFile) env.S6_GITHUB_TOKEN_FILE = tokenFile;
@@ -400,7 +410,7 @@ export class S6GitHubBroker {
   gitStatus(args, cwd, options = {}) {
     const result = this.gitRunner
       ? this.gitRunner(args, cwd, this.gitEnvironment(options))
-      : spawnSync("git", gitArgs(args, cwd, options), { cwd, env: this.gitEnvironment(options), encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
+      : spawnSync("git", gitArgs(args, cwd, { ...options, hooksPath: this.brokerHooksRoot }), { cwd, env: this.gitEnvironment(options), encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
     return result;
   }
 
@@ -414,7 +424,7 @@ export class S6GitHubBroker {
     const env = this.gitEnvironment({ ...credential, ...options });
     return this.gitRunner
       ? this.gitRunner(args, cwd, env)
-      : spawnSync("git", gitArgs(args, cwd, options), { cwd, env, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
+      : spawnSync("git", gitArgs(args, cwd, { ...options, hooksPath: this.brokerHooksRoot }), { cwd, env, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
   }
 
   gitOutput(args, cwd = this.workspacePath(this.sessionId), options = {}) {
@@ -565,9 +575,10 @@ export function parseBrokerReady(line) {
   return true;
 }
 
-function gitArgs(args, cwd, { disableHooks = true } = {}) {
+function gitArgs(args, cwd, { disableHooks = true, hooksPath = "/dev/null" } = {}) {
+  if (disableHooks && (!path.isAbsolute(hooksPath) || hooksPath === path.parse(hooksPath).root)) throw new Error("S6 broker hook directory is invalid");
   return [
-    "--no-pager", "-c", `safe.directory=${cwd}`, "-c", "core.abbrev=40", "-c", "core.fsmonitor=false", "-c", "diff.external=", ...(disableHooks ? ["-c", "core.hooksPath=/dev/null"] : []), "-c", "credential.helper=",
+    "--no-pager", "-c", `safe.directory=${cwd}`, "-c", "core.abbrev=40", "-c", "core.fsmonitor=false", "-c", "diff.external=", ...(disableHooks ? ["-c", `core.hooksPath=${hooksPath}`] : []), "-c", "credential.helper=",
     ...args,
   ];
 }
@@ -642,6 +653,17 @@ function ensureSocketParent(socketPath) {
   fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
   const stat = fs.lstatSync(parent);
   if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0) throw new Error("S6 broker socket parent must be private");
+}
+
+function ensurePrivateEmptyDirectory(directory, label) {
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const stat = fs.lstatSync(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`${label} must be a real directory`);
+  fs.chmodSync(directory, 0o700);
+  const verified = fs.lstatSync(directory);
+  if ((verified.mode & 0o077) !== 0) throw new Error(`${label} must be private`);
+  if (typeof process.getuid === "function" && verified.uid !== process.getuid()) throw new Error(`${label} owner mismatch`);
+  if (fs.readdirSync(directory).length !== 0) throw new Error(`${label} must remain empty`);
 }
 
 function ensureNoSymlinkAncestors(target) {
