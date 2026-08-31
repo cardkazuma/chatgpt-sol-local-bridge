@@ -11,6 +11,7 @@ import {
   WORKFLOW_PROOF_BASELINE,
   WORKFLOW_PROOF_FILE,
   WORKFLOW_PROOF_POST_MUTATION,
+  MANUAL_CHAT_GIT_IDENTITY,
 } from "../../scripts/s5-manual-chat-fixture.mjs";
 
 const base = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-s5-manual-chat-fixture-test-"));
@@ -41,10 +42,19 @@ test("manual Chat fixture preparation requires a clean tracked proof baseline an
   assert.equal(prepared.baseline.workflowProofTracked, true);
   assert.equal(prepared.baseline.trackedWorktreeClean, true);
   assert.equal(prepared.baseline.baselineProjectTest, "PASS");
+  assert.equal(prepared.baseline.repoLocalGitIdentity, "PASS");
+  assert.equal(prepared.baseline.commitPrerequisite, "PASS");
+  assert.equal(prepared.baseline.hookPath, "PASS");
   assert.equal(runGit(["status", "--porcelain", "--untracked-files=all"], workspacePath, gitEnv), "");
   assert.equal(runGit(["ls-files", "--error-unmatch", WORKFLOW_PROOF_FILE], workspacePath, gitEnv), `${WORKFLOW_PROOF_FILE}\n`);
   assert.equal(fs.readFileSync(path.join(workspacePath, WORKFLOW_PROOF_FILE), "utf8"), WORKFLOW_PROOF_BASELINE);
   assert.equal(runGit(["config", "--local", "--get", "core.hooksPath"], workspacePath, gitEnv), ".githooks\n");
+  assert.equal(runGit(["config", "--local", "--get", "user.name"], workspacePath, gitEnv), `${MANUAL_CHAT_GIT_IDENTITY.name}\n`);
+  assert.equal(runGit(["config", "--local", "--get", "user.email"], workspacePath, gitEnv), `${MANUAL_CHAT_GIT_IDENTITY.email}\n`);
+  assert.equal(spawnSync("git", ["var", "GIT_AUTHOR_IDENT"], { cwd: workspacePath, env: gitEnv, encoding: "utf8" }).status, 0);
+  assert.equal(spawnSync("git", ["var", "GIT_COMMITTER_IDENT"], { cwd: workspacePath, env: gitEnv, encoding: "utf8" }).status, 0);
+  assert.notEqual(spawnSync("git", ["config", "--global", "--get-regexp", "^(user\\.(name|email))$"], { cwd: workspacePath, env: gitEnv, encoding: "utf8" }).status, 0);
+  assert.equal(fs.existsSync(path.join(workspacePath, "commit-prerequisite.txt")), false, "commit prerequisite must not change handed-off baseline");
   assert.equal(runProjectTest(workspacePath, gitEnv), 0, "baseline project_test should pass");
 
   fs.appendFileSync(path.join(workspacePath, WORKFLOW_PROOF_FILE), WORKFLOW_PROOF_APPEND);

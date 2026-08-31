@@ -25,6 +25,7 @@ export class DisposableWorkspaceManager {
     root,
     source,
     governance = {},
+    gitIdentity = null,
     protectedPaths = [],
     staleAfterMs = 15 * 60_000,
     sessionPrefix = "s3",
@@ -40,6 +41,7 @@ export class DisposableWorkspaceManager {
     this.root = path.resolve(root);
     this.source = source ? validateSource(source, protectedPaths) : null;
     this.governance = { ...governance };
+    this.gitIdentity = normalizeGitIdentity(gitIdentity);
     this.protectedPaths = protectedPaths.map((item) => path.resolve(item));
     this.staleAfterMs = staleAfterMs;
     this.sessionPrefix = sessionPrefix;
@@ -211,6 +213,10 @@ export class DisposableWorkspaceManager {
     try {
       validateWorkspaceContents(workspacePath, this.gitEnv());
       installGovernance(workspacePath, this.governance);
+      if (this.gitIdentity) {
+        git(["config", "--local", "user.name", this.gitIdentity.name], workspacePath, this.gitEnv());
+        git(["config", "--local", "user.email", this.gitIdentity.email], workspacePath, this.gitEnv());
+      }
       git(["config", "--local", "core.hooksPath", ".githooks"], workspacePath, this.gitEnv());
       git(["switch", "--create", branch], workspacePath, this.gitEnv());
       validatePreparedWorkspace(workspacePath, branch, this.governance, this.gitEnv());
@@ -284,6 +290,17 @@ function validateSource(source, protectedPaths) {
     }
   }
   return resolved;
+}
+
+function normalizeGitIdentity(identity) {
+  if (identity == null) return null;
+  if (typeof identity !== "object") throw new Error("disposable Git identity must be an object");
+  const name = String(identity.name || "");
+  const email = String(identity.email || "");
+  if (!name || !email || /[\0\r\n]/.test(name) || /[\0\r\n]/.test(email)) {
+    throw new Error("disposable Git identity must contain non-empty single-line name and email");
+  }
+  return Object.freeze({ name, email });
 }
 
 function assertSafeManagerRoot(root, protectedPaths, { allowHomeRoot = false } = {}) {

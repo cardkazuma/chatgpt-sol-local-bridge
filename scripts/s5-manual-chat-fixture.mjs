@@ -8,6 +8,11 @@ export const WORKFLOW_PROOF_FILE = "workflow-proof.txt";
 export const WORKFLOW_PROOF_BASELINE = "S5 manual Chat proof baseline\n";
 export const WORKFLOW_PROOF_APPEND = "S5 ordinary Chat proof\n";
 export const WORKFLOW_PROOF_POST_MUTATION = `${WORKFLOW_PROOF_BASELINE}${WORKFLOW_PROOF_APPEND}`;
+export const MANUAL_CHAT_GIT_IDENTITY = Object.freeze({
+  name: "S5 Fixture",
+  email: "s5-fixture@example.invalid",
+});
+const COMMIT_PREREQUISITE_FILE = "commit-prerequisite.txt";
 const FORBIDDEN_BASENAMES = new Set([".env", "db.env", "secrets.yaml", "secrets.yml", "secrets.json"]);
 const FORBIDDEN_DIRECTORIES = new Set([".storage", "backups", "runtime", "node_modules"]);
 
@@ -18,6 +23,7 @@ export function prepareManualChatFixture({ managerRoot, repoRoot, governance, pr
     root: managerRoot,
     source: sourceRoot,
     governance,
+    gitIdentity: MANUAL_CHAT_GIT_IDENTITY,
     protectedPaths,
     staleAfterMs: 15 * 60_000,
     sessionPrefix: "s5",
@@ -27,7 +33,8 @@ export function prepareManualChatFixture({ managerRoot, repoRoot, governance, pr
   try {
     session = manager.create();
     const baseline = verifyManualChatFixture({ workspacePath: session.workspacePath, sourceRoot, governance, expectedBranch: session.branch, gitEnv: manager.gitEnv() });
-    return { session, sourceRoot, baseline };
+    const commitPrerequisite = validateDisposableCommitPrerequisite({ manager, sourceRoot, governance });
+    return { session, sourceRoot, baseline: { ...baseline, ...commitPrerequisite } };
   } catch (error) {
     if (session) manager.destroy(session.sessionId);
     throw error;
@@ -50,6 +57,7 @@ export function verifyManualChatFixture({ workspacePath, sourceRoot, governance,
   if (fs.existsSync(path.join(workspacePath, ".git", "objects", "info", "alternates"))) throw new Error("manual Chat fixture shares Git objects");
   if (sourceRoot && sharedGitObjectInode(sourceRoot, workspacePath)) throw new Error("manual Chat fixture has hardlinked Git objects");
   if (git(["config", "--local", "--get", "core.hooksPath"], workspacePath, gitEnv).trim() !== ".githooks") throw new Error("manual Chat fixture hook path is invalid");
+  verifyRepositoryGitIdentity(workspacePath, gitEnv);
   for (const relative of [".githooks/pre-commit", "scripts/pre-commit-policy.mjs"]) {
     const target = path.join(workspacePath, relative);
     if (!fs.statSync(target).isFile() || fs.lstatSync(target).isSymbolicLink()) throw new Error(`manual Chat fixture governance file is invalid: ${relative}`);
@@ -63,10 +71,64 @@ export function verifyManualChatFixture({ workspacePath, sourceRoot, governance,
     workflowProofTracked: true,
     trackedWorktreeClean: true,
     baselineProjectTest: "PASS",
+    repoLocalGitIdentity: "PASS",
+    hookPath: "PASS",
     branch: expectedBranch,
     baseCommit: git(["rev-parse", "HEAD"], workspacePath, gitEnv).trim(),
     historyCommits: Number(git(["rev-list", "--all", "--count"], workspacePath, gitEnv).trim()),
   };
+}
+
+function verifyRepositoryGitIdentity(workspacePath, gitEnv) {
+  for (const [key, expected] of [["user.name", MANUAL_CHAT_GIT_IDENTITY.name], ["user.email", MANUAL_CHAT_GIT_IDENTITY.email]]) {
+    if (git(["config", "--local", "--get", key], workspacePath, gitEnv).trim() !== expected) {
+      throw new Error(`manual Chat fixture ${key} is not the reviewed repository-local identity`);
+    }
+    const origin = git(["config", "--local", "--show-origin", "--get", key], workspacePath, gitEnv).trim();
+    const separator = origin.indexOf("\t");
+    const configOrigin = separator >= 0 ? origin.slice(0, separator) : origin;
+    if (!(configOrigin === "file:.git/config" || configOrigin.endsWith("/.git/config"))) {
+      throw new Error(`manual Chat fixture ${key} did not resolve from repository-local config`);
+    }
+  }
+  for (const variable of ["GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"]) {
+    const result = spawnSync("git", ["var", variable], { cwd: workspacePath, env: gitEnv, encoding: "utf8", maxBuffer: 16 * 1024 });
+    if (result.status !== 0 || !String(result.stdout || "").trim()) {
+      throw new Error(`manual Chat fixture Git cannot resolve ${variable}`);
+    }
+    if (!String(result.stdout).includes(MANUAL_CHAT_GIT_IDENTITY.name) || !String(result.stdout).includes(`<${MANUAL_CHAT_GIT_IDENTITY.email}>`)) {
+      throw new Error(`manual Chat fixture ${variable} resolved an unexpected identity`);
+    }
+  }
+  const global = spawnSync("git", ["config", "--global", "--get-regexp", "^(user\\.(name|email))$"], { cwd: workspacePath, env: gitEnv, encoding: "utf8", maxBuffer: 16 * 1024 });
+  if (global.status === 0 && String(global.stdout || "").trim()) throw new Error("manual Chat fixture unexpectedly relies on global Git identity");
+  return { repoLocalGitIdentity: "PASS" };
+}
+
+function validateDisposableCommitPrerequisite({ manager, sourceRoot, governance }) {
+  let validationSession;
+  try {
+    validationSession = manager.create();
+    const gitEnv = manager.gitEnv();
+    const baseline = verifyManualChatFixture({
+      workspacePath: validationSession.workspacePath,
+      sourceRoot,
+      governance,
+      expectedBranch: validationSession.branch,
+      gitEnv,
+    });
+    if (baseline.repoLocalGitIdentity !== "PASS") throw new Error("manual Chat fixture commit prerequisite lacks local Git identity");
+    const target = path.join(validationSession.workspacePath, COMMIT_PREREQUISITE_FILE);
+    fs.writeFileSync(target, "S5 disposable commit prerequisite\n", { mode: 0o600 });
+    git(["add", "--", COMMIT_PREREQUISITE_FILE], validationSession.workspacePath, gitEnv);
+    git(["commit", "-m", "S5 disposable commit prerequisite"], validationSession.workspacePath, gitEnv);
+    if (git(["show", "--format=%s", "--no-patch", "HEAD"], validationSession.workspacePath, gitEnv).trim() !== "S5 disposable commit prerequisite") {
+      throw new Error("manual Chat fixture disposable commit prerequisite did not create the expected commit");
+    }
+    return { commitPrerequisite: "PASS" };
+  } finally {
+    if (validationSession) manager.destroy(validationSession.sessionId);
+  }
 }
 
 function createReviewedFixtureSource({ sourceRoot, repoRoot }) {
