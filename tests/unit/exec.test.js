@@ -14,13 +14,22 @@ test.after(() => fs.rmSync(base, { recursive: true, force: true }));
 test("tool child environments strip secret-like variables by default", () => {
   process.env.BRIDGE_TEST_API_KEY = "must-not-leak";
   process.env.CONTROL_PLANE_API_KEY = "tunnel-secret";
+  process.env.S6_BROKER_SOCKET = "/bridge-broker/publish.sock";
+  process.env.S6_BROKER_CAPABILITY = "must-not-leak";
+  process.env.S6_GITHUB_TOKEN_FILE = "/private/token";
   process.env.BRIDGE_TEST_NORMAL = "visible";
   const childEnv = exec.toolEnvironment();
   assert.equal(childEnv.BRIDGE_TEST_API_KEY, undefined);
   assert.equal(childEnv.CONTROL_PLANE_API_KEY, undefined);
+  assert.equal(childEnv.S6_BROKER_SOCKET, undefined);
+  assert.equal(childEnv.S6_BROKER_CAPABILITY, undefined);
+  assert.equal(childEnv.S6_GITHUB_TOKEN_FILE, undefined);
   assert.equal(childEnv.BRIDGE_TEST_NORMAL, "visible");
   delete process.env.BRIDGE_TEST_API_KEY;
   delete process.env.CONTROL_PLANE_API_KEY;
+  delete process.env.S6_BROKER_SOCKET;
+  delete process.env.S6_BROKER_CAPABILITY;
+  delete process.env.S6_GITHUB_TOKEN_FILE;
   delete process.env.BRIDGE_TEST_NORMAL;
 });
 

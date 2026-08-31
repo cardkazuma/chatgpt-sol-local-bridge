@@ -1,8 +1,8 @@
-# S1 operations
+# S6 operations
 
-S1 is intentionally foreground/one-shot only. Do not install a LaunchAgent,
-systemd service, scheduler, tunnel client, ChatGPT connection, or other
-persistent runtime at this stage.
+The bridge remains foreground/one-shot and disposable. S6 adds no persistent
+service, scheduler, NAS/live checkout access, deployment, SSH, Docker control,
+`codex_run`, PR automation, or merge operation.
 
 ## Read-only checks
 
@@ -51,6 +51,22 @@ The service has no published port and no restart policy. Its only writable
 host mount is the disposable repository; the nested Git governance mounts are
 read-only. Do not substitute a normal working copy, a homelab checkout,
 `/volume1/docker`, a home directory, a NAS path, or a credential-bearing path.
+
+## S6 offline review stop
+
+Run `npm run check`, `npm run s6:offline-proof`, `npm run s5:runtime-proof`, and
+the S3 disposable workspace proof before any real credential work. The offline
+proof uses only local fixtures and synthetic Keychain sentinels. Stop with the
+S6 runtime and any disposable workspace destroyed; do not install or request
+the real GitHub PAT and do not push the Homelab candidate from this phase.
+
+The future real-proof gate is operator-controlled: provision an expiring
+fine-grained PAT in the fixed S6 Keychain item with access only to
+`cardkazuma/homelab` and Contents read/write, run one fixed-source clone and
+ordinary Chat edit/test/diff/stage/hook-commit/publish flow, inspect the exact
+generated branch and remote read-back, then recover/clean up and expire or
+revoke that credential after review. That gate is not part of S6 offline
+implementation.
 
 ## Stop/rollback
 

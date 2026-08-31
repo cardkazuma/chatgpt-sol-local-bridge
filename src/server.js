@@ -29,9 +29,16 @@ import { registerPolicy } from "./tools/policy.js";
 import { registerProcess } from "./tools/process.js";
 import { registerProject } from "./tools/project.js";
 import { registerWorkspace } from "./tools/workspace.js";
+import { initializeS6Broker } from "./lib/s6-broker-client.js";
 
-// A control-plane key, if inherited from an outer launcher, must never reach tool children.
-delete process.env.CONTROL_PLANE_API_KEY;
+// Control-plane and GitHub credential material, if inherited from an outer
+// launcher, must never enter the bridge process or its tool children.
+for (const key of ["CONTROL_PLANE_API_KEY", "S6_GITHUB_TOKEN_FILE", "S6_BROKER_CAPABILITY", "GITHUB_TOKEN", "GH_TOKEN"]) delete process.env[key];
+
+// S6 registers an in-memory capability with the per-session host broker before
+// the MCP server becomes available. The capability is never placed in the
+// container environment, workspace, child environment, or audit stream.
+if (process.env.S6_BROKER_SOCKET) await initializeS6Broker();
 
 export function createServer() {
   const server = instrumentServer(new McpServer({
@@ -45,7 +52,7 @@ export function createServer() {
       "Create/update/edit/test/build are allowed inside registered workspaces.",
       "The repo_shell and project commands run only inside the hardened non-root bridge container.",
       "Destructive approval mode is deny; no destructive confirmation tool is exposed.",
-      `Enabled S1 tools: ${ENABLED_TOOL_NAMES.join(", ")}.`,
+      `Enabled bridge tools: ${ENABLED_TOOL_NAMES.join(", ")}.`,
     ].join(" "),
   }));
   registerPolicy(server);
@@ -137,7 +144,7 @@ export function startHttpServer({ host = HOST, port = PORT, unixSocketPath = MCP
       ? `Unix socket ${unixSocketPath} (HTTP path /mcp)`
       : httpUrl(host, actualPort, "/mcp");
     console.log(`${APP_NAME} ${APP_VERSION} listening on ${endpoint}`);
-    console.log(`${ENABLED_TOOL_NAMES.length} enabled S1 tools | platform=${platformSummary().adapter} | destructive approval=${process.env.DESTRUCTIVE_APPROVAL_MODE || "deny"}`);
+    console.log(`${ENABLED_TOOL_NAMES.length} enabled bridge tools | platform=${platformSummary().adapter} | destructive approval=${process.env.DESTRUCTIVE_APPROVAL_MODE || "deny"}`);
     auditEvent("server.started", { host, port: actualPort, unixSocketPath: unixSocketPath || null, platform: platformSummary() });
   }
 

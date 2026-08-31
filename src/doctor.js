@@ -62,7 +62,7 @@ const platform = platformSummary();
 for (const [capability, supported] of Object.entries(platform.capabilities)) {
   check(`platform:${capability}`, supported ? "pass" : "warn", supported ? `${platform.adapter} dependency detected (runtime permission/device probe still required)` : `${platform.adapter} backend dependency missing`);
 }
-check("tool contract", EXPECTED_TOOL_NAMES.length === 27 ? "pass" : "fail", `${EXPECTED_TOOL_NAMES.length} S1 catalog tools`, true);
+check("tool contract", EXPECTED_TOOL_NAMES.length === 28 ? "pass" : "fail", `${EXPECTED_TOOL_NAMES.length} reviewed bridge catalog tools`, true);
 check("runtime mode", process.env.BRIDGE_HARDENED === "true" ? "pass" : "warn", process.env.BRIDGE_HARDENED === "true" ? "hardened container requested" : "host mode; use the S1 container runtime for execution");
 
 if (process.argv.includes("--live")) {

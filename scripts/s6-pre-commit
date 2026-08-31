@@ -1,0 +1,3 @@
+#!/bin/sh
+set -eu
+exec node "${BRIDGE_REVIEWED_POLICY_PATH:?bridge policy path missing}"

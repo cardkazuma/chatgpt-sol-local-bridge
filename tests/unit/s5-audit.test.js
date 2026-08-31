@@ -29,6 +29,8 @@ test("operator audit is redacted, rotated, and bounded", () => {
   assert.equal(content.includes("sk-secret"), false);
   assert.equal(content.includes("/Users/cardkazuma"), false);
   assert.equal(content.includes("s5-test-0123456789abcdef"), true);
+  appendAudit(base, { operation: "workspace.operation", sessionId: "s6-test-0123456789abcdef", result: "ok" });
+  assert.match(fs.readFileSync(path.join(base, "events.jsonl"), "utf8"), /s6-test-0123456789abcdef/);
   clearAudit(base, 3);
   assert.equal(fs.readdirSync(base).length, 0);
 });

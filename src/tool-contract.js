@@ -1,4 +1,4 @@
-// This is the reviewed S1 public catalog.  The upstream implementation still
+// This is the reviewed bridge public catalog. The upstream implementation still
 // contains code for later capabilities, but those names are deliberately not
 // in this catalog and therefore cannot be exposed through MCP discovery.
 export const EXPECTED_TOOL_NAMES = Object.freeze([
@@ -19,6 +19,7 @@ export const EXPECTED_TOOL_NAMES = Object.freeze([
   "git_branch_switch",
   "git_stage",
   "git_commit",
+  "git_publish_branch",
   "project_test",
   "project_lint",
   "project_typecheck",
@@ -49,6 +50,7 @@ export const TOOL_CATALOG = Object.freeze([
   { name: "git_branch_switch", family: "git-write" },
   { name: "git_stage", family: "git-write" },
   { name: "git_commit", family: "git-write" },
+  { name: "git_publish_branch", family: "git-remote-write" },
   { name: "project_test", family: "project" },
   { name: "project_lint", family: "project" },
   { name: "project_typecheck", family: "project" },
@@ -66,7 +68,7 @@ const REVIEWED_NAMES = new Set(EXPECTED_TOOL_NAMES);
 export function parseEnabledTools(rawValue) {
   if (rawValue == null) return new Set(EXPECTED_TOOL_NAMES);
   const raw = String(rawValue).trim();
-  if (!raw) throw new Error("ENABLED_TOOLS must contain at least one S1 tool name");
+  if (!raw) throw new Error("ENABLED_TOOLS must contain at least one reviewed bridge tool name");
   const names = raw.split(/[\n,]/).map((name) => name.trim()).filter(Boolean);
   if (new Set(names).size !== names.length) throw new Error("ENABLED_TOOLS contains duplicate tool names");
   const unsupported = names.filter((name) => !REVIEWED_NAMES.has(name));

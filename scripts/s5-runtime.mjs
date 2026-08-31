@@ -79,6 +79,13 @@ export class S5Runtime {
     assertSafeS5ManagerRoot(this.managerRoot);
   }
 
+  runtimeKind() { return "s5-runtime"; }
+  runtimeLabel() { return "S5"; }
+  expectedTools() { return EXPECTED_TOOLS; }
+  resourcePrefix() { return "s5"; }
+  managerRootPrefix() { return "chatgpt-local-bridge-s5-"; }
+  makeResources() { return makeResources(this.resourcePrefix()); }
+
   async start({ source, tunnelId, sessionId = "", tunnelClientBin, releaseDir, caBundle = "" } = {}) {
     this.ensureRuntimeRoot();
     const existing = this.readState();
@@ -100,10 +107,10 @@ export class S5Runtime {
         session = manager.create();
         createdSession = true;
       }
-      const resources = makeResources();
+      const resources = this.makeResources();
       state = {
         version: 1,
-        kind: "s5-runtime",
+        kind: this.runtimeKind(),
         phase: "starting",
         sessionId: session.sessionId,
         resources,
@@ -132,7 +139,7 @@ export class S5Runtime {
       this.writeTrustBundle(staticInputs.caBundle);
       this.writeProfile();
       this.writeComposeOverride();
-      this.createDockerResources(state, session);
+      await this.createDockerResources(state, session);
       await this.waitFor(() => this.containerRunning(resources.bridgeName), "bridge container");
       await this.waitFor(() => this.bridgeSocketReady(resources.bridgeName), "bridge transport socket");
       this.assertBridgeBoundary(resources);
@@ -145,7 +152,7 @@ export class S5Runtime {
       await this.waitFor(() => this.relayReady(resources), "authenticated relay");
       this.assertRelayBoundary(resources);
       const localCatalog = this.mcpStartupProbe(resources);
-      if (JSON.stringify(localCatalog) !== JSON.stringify(EXPECTED_TOOLS)) throw new Error("MCP catalog changed during startup");
+      if (JSON.stringify(localCatalog) !== JSON.stringify(this.expectedTools())) throw new Error("MCP catalog changed during startup");
 
       await withTunnelClientEnvFile({
         tempRoot: this.tempRoot,
@@ -179,7 +186,7 @@ export class S5Runtime {
         state.failure = safeFailure(error);
         try { this.writeState(state); } catch {}
       }
-      try { await this.cleanupRuntime(state?.resources, { removeImage: true }); } catch {}
+      try { await this.cleanupRuntime(state?.resources, { removeImage: true, state }); } catch {}
       if (createdSession && session) {
         try { manager.destroy(session.sessionId); } catch {}
       }
@@ -189,7 +196,7 @@ export class S5Runtime {
         tunnelDiagnostic: tunnelDiagnostic || "not observed",
       });
       this.removeStateArtifacts(state);
-      throw new Error(`S5 start blocked: ${safeFailure(error)}`);
+      throw new Error(`${this.runtimeLabel()} start blocked: ${safeFailure(error)}`);
     }
   }
 
@@ -223,13 +230,13 @@ export class S5Runtime {
       state.updatedAt = new Date().toISOString();
       this.writeState(state);
       this.stopSupervisor(state);
-      await this.cleanupRuntime(state.resources, { removeImage: true });
+      await this.cleanupRuntime(state.resources, { removeImage: true, state });
       this.audit("runtime.stop", state.sessionId, "ok", { workspaceDestruction: "not requested" });
       this.removeStateArtifacts(state);
       return { running: false, stopped: true, sessionId: state.sessionId, workspaceDestruction: "not requested" };
     } catch (error) {
       this.audit("runtime.stop", state.sessionId, "failed", { reason: safeFailure(error) });
-      throw new Error(`S5 stop incomplete: ${safeFailure(error)}`);
+      throw new Error(`${this.runtimeLabel()} stop incomplete: ${safeFailure(error)}`);
     }
   }
 
@@ -244,13 +251,13 @@ export class S5Runtime {
     this.validateState(state);
     try {
       this.stopSupervisor(state);
-      await this.cleanupRuntime(state.resources, { removeImage: true });
+      await this.cleanupRuntime(state.resources, { removeImage: true, state });
       this.removeStateArtifacts(state);
       this.audit("runtime.recover", state.sessionId, "recovered", { reapedCount: reaped.length });
       return { recovered: true, runtime: "stopped", sessionId: state.sessionId, reapedSessions: reaped };
     } catch (error) {
       this.audit("runtime.recover", state.sessionId, "failed", { reason: safeFailure(error) });
-      throw new Error(`S5 recovery incomplete: ${safeFailure(error)}`);
+      throw new Error(`${this.runtimeLabel()} recovery incomplete: ${safeFailure(error)}`);
     }
   }
 
@@ -298,7 +305,7 @@ export class S5Runtime {
     checks.push(check("platform", this.platform === "darwin", "macOS required"));
     checks.push(check("docker", this.docker.probeDocker(), "Docker CLI unavailable"));
     checks.push(check("compose", this.docker.probeCompose(), "Docker Compose unavailable"));
-    checks.push(check("catalog", JSON.stringify(EXPECTED_TOOLS) === JSON.stringify(readCatalogFromCompose(this.repoRoot)), "exact 27-tool catalog mismatch"));
+    checks.push(check("catalog", JSON.stringify(this.expectedTools()) === JSON.stringify(this.readCatalogForCheck()), `exact ${this.expectedTools().length}-tool catalog mismatch`));
     const state = this.readState();
     if (state) {
       this.validateState(state);
@@ -384,7 +391,7 @@ export class S5Runtime {
     }
     this.audit("runtime.rollback", null, "ok", { destroyedCount: destroyed.length });
     clearAudit(this.auditRoot);
-    removeExactDirectory(this.managerRoot, path.dirname(this.managerRoot), "chatgpt-local-bridge-s5-");
+    removeExactDirectory(this.managerRoot, path.dirname(this.managerRoot), this.managerRootPrefix());
     for (const directory of [this.auditRoot, this.tempRoot]) {
       if (fs.existsSync(directory)) removeExactDirectory(directory, this.runtimeRoot, path.basename(directory));
     }
@@ -407,7 +414,7 @@ export class S5Runtime {
         current.updatedAt = new Date().toISOString();
         writeRuntimeState(stateFile, current);
         this.audit("runtime.supervisor", current.sessionId, "failed", { reason: current.failure });
-        try { await this.cleanupRuntime(current.resources, { removeImage: false }); } catch {}
+        try { await this.cleanupRuntime(current.resources, { removeImage: false, state: current }); } catch {}
         current.phase = "failed";
         current.updatedAt = new Date().toISOString();
         writeRuntimeState(stateFile, current);
@@ -418,7 +425,7 @@ export class S5Runtime {
         current.failure = "workspace heartbeat failed; run recover";
         current.updatedAt = new Date().toISOString();
         writeRuntimeState(stateFile, current);
-        try { await this.cleanupRuntime(current.resources, { removeImage: false }); } catch {}
+        try { await this.cleanupRuntime(current.resources, { removeImage: false, state: current }); } catch {}
         return;
       }
       await sleep(SUPERVISOR_INTERVAL_MS);
@@ -448,12 +455,12 @@ export class S5Runtime {
     ]);
     if (help.status !== 0 || !new RegExp(`run version ${TUNNEL_VERSION}\\+${TUNNEL_COMMIT}`).test(help.stdout || "")) throw new Error("tunnel-client version/provenance probe failed");
     if (!this.docker.probeCompose()) throw new Error("Docker Compose binary is unavailable");
-    if (!resources || !/^s5-[a-z0-9]+-[0-9a-f]{12}$/.test(resources.projectName)) throw new Error("runtime resource identity is invalid");
+    if (!resources || !new RegExp(`^${this.resourcePrefix()}-[a-z0-9]+-[0-9a-f]{12}$`).test(resources.projectName)) throw new Error("runtime resource identity is invalid");
     const credential = this.credentialStatus();
     if (!credential.available) throw new Error("dedicated Keychain runtime item is unavailable");
   }
 
-  createDockerResources(state, session) {
+  async createDockerResources(state, session) {
     const { resources } = state;
     const composeEnv = this.composeEnvironment(session, resources);
     this.docker.checked(["volume", "create", "--name", resources.volumeName]);
@@ -537,7 +544,7 @@ export class S5Runtime {
     if (doctor.status !== 0) throw new Error("tunnel-client doctor failed");
   }
 
-  async cleanupRuntime(resources, { removeImage = true } = {}) {
+  async cleanupRuntime(resources, { removeImage = true, state: _state = null } = {}) {
     if (!resources) return;
     for (const name of [resources.tunnelName, resources.relayName, resources.bridgeName]) {
       this.docker.run(["stop", "-t", "10", name]);
@@ -565,7 +572,7 @@ export class S5Runtime {
         const ready = this.bridgeReady(state.resources.bridgeName);
         bridgeStatus = ready ? "live" : "not-ready";
         bridgeReady = ready ? "ready" : "not-ready";
-        if (relay) mcp = this.mcpStartupProbe(state.resources).length === EXPECTED_TOOLS.length ? "ready" : "not-ready";
+        if (relay) mcp = this.mcpStartupProbe(state.resources).length === this.expectedTools().length ? "ready" : "not-ready";
       } catch { bridgeStatus = "not-ready"; bridgeReady = "not-ready"; mcp = "not-ready"; }
     }
     if (tunnel) {
@@ -583,7 +590,7 @@ export class S5Runtime {
     const health = this.bridgeEndpoint(name, "/healthz");
     const ready = this.bridgeEndpoint(name, "/readyz");
     return health.status === 200 && health.body?.ok === true && ready.status === 200 && ready.body?.ready === true
-      && Number(ready.body?.toolCount) === EXPECTED_TOOLS.length && JSON.stringify(ready.body?.tools) === JSON.stringify(EXPECTED_TOOLS);
+      && Number(ready.body?.toolCount) === this.expectedTools().length && JSON.stringify(ready.body?.tools) === JSON.stringify(this.expectedTools());
   }
 
   bridgeSocketReady(name) {
@@ -669,10 +676,15 @@ export class S5Runtime {
     const mounts = value.Mounts || [];
     const transport = mounts.find((mount) => mount.Destination === "/transport");
     if (!transport || transport.Type !== "volume" || transport.Name !== resources.volumeName || transport.RW !== true) throw new Error("bridge transport mount is not the reviewed Docker volume");
-    if (mounts.filter((mount) => mount.Type === "volume").length !== 1 || mounts.filter((mount) => mount.Type === "bind").length !== 4) throw new Error("bridge mount topology changed");
+    if (mounts.filter((mount) => mount.Type === "volume").length !== 1 || mounts.filter((mount) => mount.Type === "bind").length !== this.expectedBridgeBindCount()) throw new Error("bridge mount topology changed");
     if ((value.NetworkSettings?.Networks && Object.keys(value.NetworkSettings.Networks).join(",")) !== "none") throw new Error("bridge has an unexpected network");
     assertNoCredentialEnv(value.Config?.Env || [], { allowRelay: false });
+    this.assertBridgeExtraBoundary(value, resources);
   }
+
+  expectedBridgeBindCount() { return 4; }
+  assertBridgeExtraBoundary() {}
+  readCatalogForCheck() { return readCatalogFromCompose(this.repoRoot); }
 
   assertRelayBoundary(resources) {
     const value = this.docker.inspect(resources.relayName);
@@ -716,19 +728,22 @@ export class S5Runtime {
       },
       protectedPaths: protectedPaths(this.repoRoot),
       staleAfterMs: 15 * 60_000,
-      sessionPrefix: "s5",
-      branchPrefix: "bridge/s5",
-      readOnly,
+        sessionPrefix: this.sessionPrefix(),
+        branchPrefix: this.branchPrefix(),
+        readOnly,
     });
   }
 
   validateSession(session, manager) {
-    if (!session || session.state !== "active" || !/^s5-[a-z0-9]+-[0-9a-f]{16}$/.test(session.sessionId)) throw new Error("disposable session state is invalid");
-    if (session.branch !== `bridge/s5/${session.sessionId}`) throw new Error("disposable session branch is invalid");
+    if (!session || session.state !== "active" || !new RegExp(`^${this.sessionPrefix()}-[a-z0-9]+-[0-9a-f]{16}$`).test(session.sessionId)) throw new Error("disposable session state is invalid");
+    if (session.branch !== `${this.branchPrefix()}/${session.sessionId}`) throw new Error("disposable session branch is invalid");
     if (session.coreHooksPath !== ".githooks" || session.historyCommits < 1) throw new Error("disposable workspace governance/history is invalid");
     if (!isWithin(session.workspacePath, manager.sessionsRoot)) throw new Error("disposable workspace path escaped manager root");
     if (isWithin(session.workspacePath, os.homedir())) throw new Error("disposable workspace may not be under the normal user home");
   }
+
+  sessionPrefix() { return this.resourcePrefix(); }
+  branchPrefix() { return `bridge/${this.sessionPrefix()}`; }
 
   resolveTunnelInputs({ tunnelClientBin, releaseDir, caBundle }) {
     const releaseRoot = releaseDir ? path.resolve(releaseDir) : "";
@@ -833,8 +848,8 @@ export class S5Runtime {
   }
 
   validateState(state) {
-    if (!state || state.version !== 1 || state.kind !== "s5-runtime" || !/^s5-[a-z0-9]+-[0-9a-f]{16}$/.test(state.sessionId)) throw new Error("runtime state is invalid");
-    validateResources(state.resources);
+    if (!state || state.version !== 1 || state.kind !== this.runtimeKind() || !new RegExp(`^${this.sessionPrefix()}-[a-z0-9]+-[0-9a-f]{16}$`).test(state.sessionId)) throw new Error("runtime state is invalid");
+    validateResources(state.resources, this.resourcePrefix());
     if (path.resolve(state.managerRoot) !== this.managerRoot) throw new Error("runtime manager root identity mismatch");
   }
 
@@ -843,17 +858,20 @@ export class S5Runtime {
     const stat = fs.lstatSync(this.runtimeRoot);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("S5 runtime root must be a real directory");
     fs.chmodSync(this.runtimeRoot, 0o700);
-    const marker = path.join(this.runtimeRoot, RUNTIME_MARKER);
+    const marker = path.join(this.runtimeRoot, this.runtimeMarkerName());
     if (fs.existsSync(marker)) {
-      if (fs.readFileSync(marker, "utf8") !== "chatgpt-sol-local-bridge S5 runtime root\n") throw new Error("S5 runtime marker mismatch");
+      if (fs.readFileSync(marker, "utf8") !== this.runtimeMarkerContent()) throw new Error(`${this.runtimeLabel()} runtime marker mismatch`);
     } else {
-      const entries = fs.readdirSync(this.runtimeRoot).filter((entry) => entry !== RUNTIME_MARKER);
-      if (entries.length) throw new Error("refusing to use a non-empty unmarked S5 runtime root");
-      writePrivateFile(marker, "chatgpt-sol-local-bridge S5 runtime root\n");
+      const entries = fs.readdirSync(this.runtimeRoot).filter((entry) => entry !== this.runtimeMarkerName());
+      if (entries.length) throw new Error(`refusing to use a non-empty unmarked ${this.runtimeLabel()} runtime root`);
+      writePrivateFile(marker, this.runtimeMarkerContent());
     }
     fs.mkdirSync(this.tempRoot, { recursive: true, mode: 0o700 });
     fs.mkdirSync(this.auditRoot, { recursive: true, mode: 0o700 });
   }
+
+  runtimeMarkerContent() { return "chatgpt-sol-local-bridge S5 runtime root\n"; }
+  runtimeMarkerName() { return RUNTIME_MARKER; }
 
   removeStateArtifacts(state) {
     for (const target of [this.stateFile, this.profileFile, this.overrideFile, path.join(this.runtimeRoot, "trust-roots.pem")]) fs.rmSync(target, { force: true });
@@ -942,9 +960,10 @@ export class DockerDriver {
   probeCompose() { return this.run(["compose", "version"]).status === 0; }
 }
 
-export function makeResources() {
+export function makeResources(prefix = "s5") {
   const suffix = crypto.randomBytes(6).toString("hex");
-  const projectName = `s5-${process.pid}-${suffix}`;
+  if (!/^[a-z][a-z0-9-]*$/.test(prefix)) throw new Error("runtime resource prefix is invalid");
+  const projectName = `${prefix}-${process.pid}-${suffix}`;
   return {
     projectName,
     imageTag: `chatgpt-sol-local-bridge:${projectName}`,
@@ -958,8 +977,8 @@ export function makeResources() {
   };
 }
 
-function validateResources(resources) {
-  if (!resources || !/^s5-[a-z0-9]+-[0-9a-f]{12}$/.test(resources.projectName)) throw new Error("runtime resource identity is invalid");
+function validateResources(resources, prefix = "s5") {
+  if (!resources || !new RegExp(`^${prefix}-[a-z0-9]+-[0-9a-f]{12}$`).test(resources.projectName)) throw new Error("runtime resource identity is invalid");
   for (const key of ["imageTag", "bridgeName", "relayName", "tunnelName", "volumeName", "privateNetworkName", "egressNetworkName"]) {
     if (!/^[a-z0-9][a-z0-9_.:-]+$/.test(String(resources[key] || ""))) throw new Error(`runtime resource ${key} is invalid`);
   }
@@ -985,8 +1004,8 @@ function assertSafeS5ManagerRoot(root) {
   const resolved = path.resolve(root);
   const darwinTmpAlias = process.platform === "darwin" && (isWithin(resolved, "/tmp") || isWithin(resolved, "/private/tmp"));
   const darwinUserTemp = process.platform === "darwin" && /^\/var\/folders\/[^/]+\/[^/]+\/T(?:\/|$)/.test(resolved);
-  if ((!isWithin(resolved, os.tmpdir()) && !darwinTmpAlias && !darwinUserTemp) || !path.basename(resolved).startsWith("chatgpt-local-bridge-s5-")) {
-    throw new Error("S5 manager root must be a dedicated directory under the OS temporary directory");
+  if ((!isWithin(resolved, os.tmpdir()) && !darwinTmpAlias && !darwinUserTemp) || !/^chatgpt-local-bridge-(?:s5|s6)-/.test(path.basename(resolved))) {
+    throw new Error("bridge manager root must be a dedicated directory under the OS temporary directory");
   }
   assertNoSymlinkAncestors(resolved);
 }
@@ -1130,7 +1149,7 @@ function readJson(filePath) {
 
 function managerRootFromRuntimeState(stateFile) {
   const state = readJson(stateFile);
-  return state?.kind === "s5-runtime" && typeof state.managerRoot === "string" ? state.managerRoot : "";
+  return ["s5-runtime", "s6-runtime"].includes(state?.kind) && typeof state.managerRoot === "string" ? state.managerRoot : "";
 }
 
 function check(name, pass, detail) { return { name, pass: Boolean(pass), detail: pass ? "ok" : String(detail) }; }
@@ -1211,7 +1230,11 @@ function assertNoSymlinkAncestors(target) {
 }
 
 function readCatalogFromCompose(repoRoot) {
-  const text = fs.readFileSync(path.join(repoRoot, "compose.yaml"), "utf8");
+  return readCatalogFromFile(path.join(repoRoot, "compose.yaml"));
+}
+
+export function readCatalogFromFile(filePath) {
+  const text = fs.readFileSync(filePath, "utf8");
   const match = text.match(/ENABLED_TOOLS:\s*([^\n]+)/);
   return match ? match[1].trim().split(",") : [];
 }

@@ -78,7 +78,7 @@ function ensureDirectory(directory) {
 
 function sanitizeSession(value) {
   if (value == null) return null;
-  return /^s5-[a-z0-9]+-[0-9a-f]{16}$/.test(String(value)) ? String(value) : "[REDACTED]";
+  return /^(?:s5|s6)-[a-z0-9]+-[0-9a-f]{16}$/.test(String(value)) ? String(value) : "[REDACTED]";
 }
 
 function sanitizeDetail(value, key = "") {

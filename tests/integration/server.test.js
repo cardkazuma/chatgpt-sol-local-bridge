@@ -88,14 +88,24 @@ test("Unix socket endpoint enforces the same explicit bearer authentication", as
   assert.match(allowed.body, /serverInfo|protocolVersion/);
 });
 
-test("MCP discovery exposes exactly the reviewed S1 catalog", async () => {
+test("MCP discovery exposes exactly the reviewed 28-tool bridge catalog", async () => {
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name);
   assert.deepEqual(names, [...EXPECTED_TOOL_NAMES]);
   assert.equal(tools.tools.every((tool) => tool.inputSchema?.type === "object"), true);
-  for (const disabled of ["shell", "git_run", "codex_run", "workspace_add_root", "confirm_destructive", "web_fetch", "office", "system_info", "dom_cdp"]) {
+  for (const disabled of ["shell", "git_run", "git_push", "git_fetch", "codex_run", "workspace_add_root", "confirm_destructive", "web_fetch", "office", "system_info", "dom_cdp"]) {
     assert.equal(names.includes(disabled), false, `${disabled} must not be discoverable`);
   }
+});
+
+test("the only remote-write catalog entry is the controller-derived S6 publisher", async () => {
+  const tools = await client.listTools();
+  const publish = tools.tools.find((tool) => tool.name === "git_publish_branch");
+  assert.ok(publish);
+  assert.deepEqual(publish.inputSchema?.properties || {}, {});
+  assert.equal(publish.inputSchema?.additionalProperties ?? false, false);
+  assertError(await call("git_publish_branch", { branch: "main", force: true, refspec: "*" }), /no caller-supplied authority|S6|Unrecognized keys/);
+  assertError(await call("git_publish_branch", {}), /active S6 session/);
 });
 
 test("disabled tools are not invocable through the MCP server", async () => {

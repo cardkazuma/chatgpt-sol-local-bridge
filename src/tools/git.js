@@ -3,7 +3,8 @@ import path from "node:path";
 import { z } from "zod";
 import { runCommand } from "../lib/exec.js";
 import { assertInWorkspace, assertStructuredPath, canonicalPath, currentWorkspace, isWithin, resolveUserPath } from "../lib/paths.js";
-import { assertReviewedHooks } from "../lib/git-governance.js";
+import { assertReviewedHooks, reviewedHooksPath } from "../lib/git-governance.js";
+import { s6BrokerAttestCommit, s6BrokerConfigured, s6BrokerPublishBranch } from "../lib/s6-broker-client.js";
 import { registerEnabledTool } from "../lib/tool-registry.js";
 import { fail, json } from "../lib/text.js";
 
@@ -113,7 +114,33 @@ export function registerGit(server) {
       for (const value of staged) selectedRepoPath(root, value, { allowMissing: true });
       const deleted = await stagedDeletedPaths(root, extra?.signal);
       if (deleted.length) return fail(`git_commit refuses staged deletions: ${deleted.join(", ")}`);
-      return json(await git(["-c", "core.hooksPath=.githooks", "commit", "-m", String(message)], root, extra?.signal));
+      if (process.env.BRIDGE_GOVERNANCE_MODE === "s6" && !s6BrokerConfigured()) return fail("S6 structured commits require the manager-owned broker attestation channel");
+      const result = await git(["-c", `core.hooksPath=${reviewedHooksPath()}`, "commit", "-m", String(message)], root, extra?.signal);
+      if (process.env.BRIDGE_GOVERNANCE_MODE === "s6") {
+        const head = await git(["rev-parse", "HEAD"], root, extra?.signal);
+        if (!head.ok) return fail("S6 commit was created but its HEAD could not be attested");
+        try {
+          await s6BrokerAttestCommit(head.stdout.trim());
+        } catch (error) {
+          return fail(`S6 commit was created but is not publishable: ${error.message}`);
+        }
+      }
+      return json(result);
+    } catch (error) {
+      return fail(error.message);
+    }
+  });
+
+  registerEnabledTool(server, "git_publish_branch", {
+    title: "Publish reviewed S6 branch",
+    description: "Publish the current reviewed S6 session HEAD to its manager-generated bridge-owned GitHub branch. Repository, branch, refspec, and force behavior are controller-derived.",
+    inputSchema: z.object({}).strict(),
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  }, async (args = {}) => {
+    try {
+      if (Object.keys(args || {}).length) return fail("git_publish_branch accepts no caller-supplied authority or target");
+      if (process.env.BRIDGE_GOVERNANCE_MODE !== "s6") return fail("git_publish_branch is available only in an active S6 session");
+      return json(await s6BrokerPublishBranch());
     } catch (error) {
       return fail(error.message);
     }

@@ -270,6 +270,7 @@ export function toolEnvironment(overrides = {}) {
   const env = HARDENED_CONTAINER
     ? hardenedEnvironment(overrides)
     : { ...process.env, ...(overrides || {}) };
+  for (const key of ["S6_BROKER_SOCKET", "S6_BROKER_CAPABILITY", "S6_GITHUB_TOKEN_FILE"]) delete env[key];
   if (TOOL_ENV_INHERIT_SECRETS && !HARDENED_CONTAINER) return env;
   for (const key of Object.keys(env)) {
     if (/^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)$/.test(key)) {
@@ -289,6 +290,10 @@ function hardenedEnvironment(overrides) {
   const allowed = new Set([
     "CI", "HOME", "HOST", "LANG", "LC_ALL", "LC_CTYPE", "LOGNAME", "NODE_ENV", "NO_COLOR",
     "PATH", "PORT", "PWD", "TEMP", "TERM", "TMP", "TMPDIR", "TZ", "USER",
+    // Non-secret manager-mounted governance coordinates are needed by the
+    // reviewed S6 hook. Broker socket/capability variables intentionally stay
+    // out of child environments.
+    "BRIDGE_GOVERNANCE_MODE", "BRIDGE_REVIEWED_HOOK_PATH", "BRIDGE_REVIEWED_HOOKS_PATH", "BRIDGE_REVIEWED_POLICY_PATH",
   ]);
   const env = Object.fromEntries(Object.entries({ ...process.env, ...(overrides || {}) })
     .filter(([key]) => allowed.has(key)));

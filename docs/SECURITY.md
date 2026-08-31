@@ -1,9 +1,9 @@
-# S1 security model
+# S6 security model
 
-S1 is a local, review-only foundation. The bridge is expected to run from
-`compose.yaml` as a one-shot container with `network_mode: none`; no tunnel,
-ChatGPT connection, persistent service, NAS mount, or production checkout is
-part of this stage.
+The S1 model below remains the foundation. S6 adds one host-side remote-write
+authority: the controller may source only private `cardkazuma/homelab` and
+publish only the active manager-generated S6 branch. The offline implementation
+has not provisioned a real PAT or performed a real GitHub clone/push.
 
 ## Primary boundary
 
@@ -26,15 +26,18 @@ different mounts or grants Docker privileges.
 
 ## MCP exposure
 
-`ENABLED_TOOLS` is parsed against a committed 27-name catalog. Every
+The S5 base Compose model is parsed against the committed 27-name catalog;
+the S6 controller override is parsed against the exact 28-name catalog. Every
 registration site, including retained upstream desktop code, goes through the
 same registry gate. Unknown names fail closed, and disabled tools are absent
 from `tools/list` rather than returning a runtime permission error.
 
-S1 exposes policy, workspace, structured files, read-only Git, selected local
-Git writes, four project commands, contained `repo_shell`, bridge-owned process
-supervision, and bounded health. It does not expose upstream `git_run`, Git
-push/remote operations, `codex_run`, root registration, destructive
+S6 adds only `git_publish_branch` to the S5 set. It does not expose upstream
+`git_run`, `git_push`, `git_fetch`, arbitrary Git remotes/refspecs, force/delete
+operations, GitHub API, PR, or merge. S1 exposes policy, workspace, structured
+files, read-only Git, selected local Git writes, four project commands,
+contained `repo_shell`, bridge-owned process supervision, and bounded health.
+It does not expose `codex_run`, root registration, destructive
 confirmation, browser/CDP, desktop/input/screen/audio/clipboard tools, web
 fetch, Office, scheduler, Penpot, NAS, Docker, SSH, or broad host-system
 tools.
@@ -83,6 +86,53 @@ disabled rather than filtered by URL or command patterns.
 The default Compose model publishes no port. The optional `MCP_TOKEN` is not
 set by that model; do not publish the unauthenticated endpoint or use a
 different transport without a separate review.
+
+## S6 remote-write addendum
+
+The remote-write threat model treats `repo_shell` and candidate repository
+content as malicious. A valid local commit is not publish authority: the host
+broker independently checks a live manager-owned `s6-...` session, exact
+`homelab` source/origin, exact `bridge/s6/<same-session-id>` branch and remote
+ref, attached HEAD, full non-shallow history, clean worktree/index/ignored set,
+recorded canonical base ancestry, linear non-merge history, no symlink or
+submodule tree entries, and the authoritative shared path policy. Every
+unpublished commit requires an attestation from the structured `git_commit`
+path; a shell `git commit --no-verify` is unpublishable. Workflow files,
+`.githooks/**`, the policy helper, and `.gitmodules` fail closed for S6.
+
+Only this remote ref is possible:
+`refs/heads/bridge/s6/<same-session-id>`. The first write requires the ref to be
+absent unless owned by the same recorded session. Later writes require the
+recorded prior SHA and fast-forward ancestry. The broker has no force,
+force-with-lease, wildcard, deletion, alternate remote, caller refspec, GitHub
+API, PR, or merge path. It reads the remote SHA back and persists/returns only
+sanitized metadata and evidence.
+
+The preferred future credential is an expiring fine-grained PAT with access
+only to `cardkazuma/homelab` and Contents read/write permission. It uses a
+dedicated fixed macOS Keychain service/account separate from S5. The operator
+enters it only through the local Keychain path; the host broker scopes it to a
+manager-owned mode-0600 temporary file, uses an isolated HOME/XDG Git config,
+`GIT_CONFIG_NOSYSTEM=1`, disabled prompts, no normal-user helper, and SSH
+disabled, then deterministically removes the file. The token is never in a
+URL, argv, shell history, tracked config, workspace, bridge/tool-child
+environment, logs, audit, or evidence. Offline tests use synthetic tokens only.
+
+The bridge container remains `network_mode: none`, credential-free, non-root,
+read-only-rootfs, capability-dropped, and no-new-privileges. A fixed per-session
+Unix socket carries only an in-memory capability and fixed register/attest/
+empty-input publish messages. The host broker is not a shell, HTTP proxy,
+generic Git proxy, or credential helper; candidate hooks are mounted from
+manager-owned external governance and are disabled for credential-bearing Git
+operations.
+
+The current private personal GitHub repository has no Rulesets or branch
+protection in the available plan. That is an explicit residual, not an
+assumption: fixed repository/namespace/graph validation in the host broker is
+mandatory. A concurrent remote movement between the broker's read and Git's
+own update negotiation remains a transport-level TOCTOU residual because
+force-with-lease and GitHub API operations are outside this gate; receipt and
+read-back mismatches fail closed and are surfaced for recovery review.
 
 ## Residual trust
 

@@ -52,10 +52,10 @@ services:
         read_only: true
       - type: bind
         source: ${BRIDGE_GITHOOKS:?set BRIDGE_GITHOOKS to the disposable repo .githooks directory}
-        target: /workspace/repo/.githooks
+        target: ${BRIDGE_GITHOOKS_TARGET:-/workspace/repo/.githooks}
         read_only: true
       - type: bind
         source: ${BRIDGE_POLICY_FILE:?set BRIDGE_POLICY_FILE to the disposable repo pre-commit policy}
-        target: /workspace/repo/scripts/pre-commit-policy.mjs
+        target: ${BRIDGE_POLICY_TARGET:-/workspace/repo/scripts/pre-commit-policy.mjs}
         read_only: true
     command: ["node", "/opt/bridge/src/server.js"]

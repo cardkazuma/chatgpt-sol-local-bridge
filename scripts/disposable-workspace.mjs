@@ -3,22 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { classifyPolicyPath } from "./pre-commit-policy.mjs";
 
 const SESSION_ID = /^[a-z][a-z0-9-]*-[a-z0-9]+-[0-9a-f]{16}$/;
 const FORBIDDEN_ROOTS = ["/Volumes", "/volume1/docker"];
-const FORBIDDEN_COMPONENTS = new Set([
-  ".storage",
-  "backups",
-  "runtime",
-  "node_modules",
-]);
-const FORBIDDEN_BASENAMES = new Set([
-  ".env",
-  "db.env",
-  "secrets.yaml",
-  "secrets.yml",
-  "secrets.json",
-]);
 
 export class DisposableWorkspaceManager {
   constructor({
@@ -30,6 +18,8 @@ export class DisposableWorkspaceManager {
     staleAfterMs = 15 * 60_000,
     sessionPrefix = "s3",
     branchPrefix = `bridge/${sessionPrefix}`,
+    remoteName = "source",
+    materializer = null,
     allowHomeRoot = false,
     readOnly = false,
   } = {}) {
@@ -38,14 +28,18 @@ export class DisposableWorkspaceManager {
     if (!Number.isFinite(staleAfterMs) || staleAfterMs <= 0) throw new Error("staleAfterMs must be positive");
     if (!/^[a-z][a-z0-9-]*$/.test(sessionPrefix)) throw new Error("disposable session prefix is invalid");
     if (!/^bridge\/[a-z][a-z0-9-]*$/.test(branchPrefix)) throw new Error("disposable branch prefix is invalid");
+    if (!/^[a-z][a-z0-9-]*$/.test(remoteName)) throw new Error("disposable remote name is invalid");
+    if (materializer != null && typeof materializer !== "function") throw new Error("disposable source materializer must be a function");
     this.root = path.resolve(root);
     this.source = source ? validateSource(source, protectedPaths) : null;
-    this.governance = { ...governance };
+    this.governance = { ...governance, managerRoot: this.root };
     this.gitIdentity = normalizeGitIdentity(gitIdentity);
     this.protectedPaths = protectedPaths.map((item) => path.resolve(item));
     this.staleAfterMs = staleAfterMs;
     this.sessionPrefix = sessionPrefix;
     this.branchPrefix = branchPrefix;
+    this.remoteName = remoteName;
+    this.materializer = materializer;
     this.readOnly = readOnly;
     this.sessionIdPattern = new RegExp(`^${escapeRegExp(sessionPrefix)}-[a-z0-9]+-[0-9a-f]{16}$`);
     this.sessionsRoot = path.join(this.root, "sessions");
@@ -77,10 +71,12 @@ export class DisposableWorkspaceManager {
       heartbeatAt: new Date().toISOString(),
     };
     writeJsonExclusive(statePath, record);
+    let preparation = {};
     try {
-      this.cloneAndPrepare(workspacePath, branch);
+      preparation = this.cloneAndPrepare(workspacePath, branch, sessionId);
       const prepared = {
         ...record,
+        ...preparation,
         state: "active",
         sourceCommit: git(["rev-parse", "HEAD"], workspacePath, this.gitEnv()).trim(),
         historyCommits: Number(git(["rev-list", "--all", "--count"], workspacePath, this.gitEnv()).trim()),
@@ -91,6 +87,9 @@ export class DisposableWorkspaceManager {
       return prepared;
     } catch (error) {
       removeOwnedPath(workspacePath, this.sessionsRoot);
+      if (preparation.governanceHostRoot) {
+        try { removeOwnedPath(preparation.governanceHostRoot, this.governanceRoot); } catch {}
+      }
       fs.rmSync(statePath, { force: true });
       throw error;
     }
@@ -115,14 +114,19 @@ export class DisposableWorkspaceManager {
       createdAt: new Date().toISOString(),
       heartbeatAt: new Date().toISOString(),
     });
+    let preparation = {};
     try {
-      this.cloneAndPrepare(incoming, current.branch);
+      preparation = this.cloneAndPrepare(incoming, current.branch, sessionId);
       fs.renameSync(current.workspacePath, retired);
       fs.renameSync(incoming, current.workspacePath);
       removeOwnedPath(retired, this.sessionsRoot);
+      if (current.governanceHostRoot && preparation.governanceHostRoot !== current.governanceHostRoot) {
+        removeOwnedPath(current.governanceHostRoot, this.governanceRoot);
+      }
       fs.rmSync(refreshStatePath, { force: true });
       const refreshed = {
         ...current,
+        ...preparation,
         state: "active",
         pid: process.pid,
         sourceCommit: git(["rev-parse", "HEAD"], current.workspacePath, this.gitEnv()).trim(),
@@ -135,6 +139,9 @@ export class DisposableWorkspaceManager {
       return refreshed;
     } catch (error) {
       removeOwnedPath(incoming, this.sessionsRoot);
+      if (preparation.governanceHostRoot && preparation.governanceHostRoot !== current.governanceHostRoot) {
+        try { removeOwnedPath(preparation.governanceHostRoot, this.governanceRoot); } catch {}
+      }
       if (fs.existsSync(retired) && !fs.existsSync(current.workspacePath)) fs.renameSync(retired, current.workspacePath);
       fs.rmSync(refreshStatePath, { force: true });
       writeJson(current.statePath, current);
@@ -154,7 +161,9 @@ export class DisposableWorkspaceManager {
     const record = this.readRecord(sessionId);
     assertOwnedRecord(record, this.sessionsRoot, this.stateRoot, this.sessionPrefix, this.branchPrefix);
     removeOwnedPath(record.workspacePath, this.sessionsRoot);
+    if (record.governanceHostRoot) removeOwnedPath(record.governanceHostRoot, this.governanceRoot);
     fs.rmSync(record.statePath, { force: true });
+    fs.rmSync(path.join(this.stateRoot, `${sessionId}.published.json`), { force: true });
     return { sessionId, destroyed: true };
   }
 
@@ -172,7 +181,9 @@ export class DisposableWorkspaceManager {
       }
       if (!isStale(record, now, this.staleAfterMs)) continue;
       removeOwnedPath(record.workspacePath, this.sessionsRoot);
+      if (record.governanceHostRoot) removeOwnedPath(record.governanceHostRoot, this.governanceRoot);
       fs.rmSync(statePath, { force: true });
+      fs.rmSync(path.join(this.stateRoot, `${record.sessionId}.published.json`), { force: true });
       reapSessionTransients(record.sessionId, this.sessionsRoot);
       reaped.push(record.sessionId);
     }
@@ -187,7 +198,9 @@ export class DisposableWorkspaceManager {
         const record = JSON.parse(fs.readFileSync(path.join(this.stateRoot, entry.name), "utf8"));
         assertOwnedState(record, this.sessionsRoot, this.stateRoot, path.join(this.stateRoot, entry.name), this.sessionPrefix, this.branchPrefix);
         removeOwnedPath(record.workspacePath, this.sessionsRoot);
+        if (record.governanceHostRoot) removeOwnedPath(record.governanceHostRoot, this.governanceRoot);
         fs.rmSync(record.statePath, { force: true });
+        fs.rmSync(path.join(this.stateRoot, `${record.sessionId}.published.json`), { force: true });
         reapSessionTransients(record.sessionId, this.sessionsRoot);
         destroyed.push(record.sessionId);
       } catch {
@@ -206,25 +219,79 @@ export class DisposableWorkspaceManager {
     return record;
   }
 
-  cloneAndPrepare(workspacePath, branch) {
+  cloneAndPrepare(workspacePath, branch, sessionId) {
     if (!this.source) throw new Error("disposable workspace source is required for clone");
     if (fs.existsSync(workspacePath)) throw new Error(`workspace destination already exists: ${workspacePath}`);
-    git(["clone", "--no-local", "--no-hardlinks", "--origin", "source", this.source, workspacePath], this.root, this.gitEnv());
+    let preparation = {};
+    if (this.materializer) {
+      preparation = this.materializer({
+        source: this.source,
+        remoteName: this.remoteName,
+        workspacePath,
+        branch,
+        sessionId,
+        managerRoot: this.root,
+        gitEnv: this.gitEnv(),
+      }) || {};
+    } else {
+      git(["clone", "--no-local", "--no-hardlinks", "--origin", this.remoteName, this.source, workspacePath], this.root, this.gitEnv());
+    }
     try {
       validateWorkspaceContents(workspacePath, this.gitEnv());
-      installGovernance(workspacePath, this.governance);
+      const governance = this.installGovernance(workspacePath, sessionId);
+      preparation = { ...preparation, ...governance };
       if (this.gitIdentity) {
         git(["config", "--local", "user.name", this.gitIdentity.name], workspacePath, this.gitEnv());
         git(["config", "--local", "user.email", this.gitIdentity.email], workspacePath, this.gitEnv());
       }
-      git(["config", "--local", "core.hooksPath", ".githooks"], workspacePath, this.gitEnv());
+      git(["config", "--local", "core.hooksPath", this.governanceHooksPath()], workspacePath, this.gitEnv());
       git(["switch", "--create", branch], workspacePath, this.gitEnv());
-      validatePreparedWorkspace(workspacePath, branch, this.governance, this.gitEnv());
+      validatePreparedWorkspace(workspacePath, branch, this.governance, this.gitEnv(), {
+        remoteName: this.remoteName,
+        governanceHooksPath: this.governanceHooksPath(),
+        governanceHostRoot: preparation.governanceHostRoot,
+      });
       restrictTree(workspacePath);
+      return preparation;
     } catch (error) {
       removeOwnedPath(workspacePath, this.sessionsRoot);
+      if (preparation.governanceHostRoot) removeOwnedPath(preparation.governanceHostRoot, this.governanceRoot);
       throw error;
     }
+  }
+
+  governanceHooksPath() {
+    return this.governance.external
+      ? String(this.governance.hooksPath || "/bridge-governance/hooks")
+      : ".githooks";
+  }
+
+  installGovernance(workspacePath, sessionId) {
+    if (!this.governance.external) {
+      installGovernance(workspacePath, this.governance);
+      return {};
+    }
+    if (!sessionId || !/^[a-z][a-z0-9-]*-[a-z0-9]+-[0-9a-f]{16}$/.test(sessionId)) {
+      throw new Error("external governance session identity is invalid");
+    }
+    const governanceRoot = path.join(this.governanceRoot, `${sessionId}-${crypto.randomBytes(8).toString("hex")}`);
+    fs.mkdirSync(path.join(governanceRoot, "hooks"), { recursive: true, mode: 0o700 });
+    copyReviewedFile(this.governance.hookFile, path.join(governanceRoot, "hooks", "pre-commit"));
+    copyReviewedFile(this.governance.policyFile, path.join(governanceRoot, "pre-commit-policy.mjs"));
+    restrictGovernanceTree(governanceRoot);
+    return { governanceHostRoot: governanceRoot };
+  }
+
+  governanceFiles(record) {
+    if (!record?.governanceHostRoot) return null;
+    return {
+      hostRoot: record.governanceHostRoot,
+      hooks: path.join(record.governanceHostRoot, "hooks"),
+      hookFile: path.join(record.governanceHostRoot, "hooks", "pre-commit"),
+      policyFile: path.join(record.governanceHostRoot, "pre-commit-policy.mjs"),
+      hooksPath: this.governanceHooksPath(),
+      policyPath: String(this.governance.policyPath || "/bridge-governance/pre-commit-policy.mjs"),
+    };
   }
 
   gitEnv() {
@@ -243,7 +310,8 @@ export class DisposableWorkspaceManager {
   }
 
   ensureRoots() {
-    for (const directory of [this.root, this.sessionsRoot, this.stateRoot, this.gitHome, path.join(this.gitHome, "config")]) {
+    this.governanceRoot = path.join(this.root, "governance");
+    for (const directory of [this.root, this.sessionsRoot, this.stateRoot, this.gitHome, path.join(this.gitHome, "config"), this.governanceRoot]) {
       fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
       const stat = fs.lstatSync(directory);
       if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`disposable manager path is not a real directory: ${directory}`);
@@ -324,10 +392,7 @@ function assertSafeManagerRoot(root, protectedPaths, { allowHomeRoot = false } =
 function validateWorkspaceContents(workspacePath, env) {
   const tracked = git(["ls-files", "-z"], workspacePath, env).split("\0").filter(Boolean);
   for (const relative of tracked) {
-    const parts = relative.split(/[\\/]/);
-    const normalizedParts = parts.map((part) => part.toLowerCase());
-    const basename = normalizedParts.at(-1);
-    if (normalizedParts.some((part) => FORBIDDEN_COMPONENTS.has(part)) || FORBIDDEN_BASENAMES.has(basename) || /^\.env(?:\.|$)/.test(basename) || /\.(?:db|sqlite|sqlite3|log|pem|key|p12|pfx)$/.test(basename)) {
+    if (!classifyPolicyPath(relative).allowed) {
       throw new Error(`source contains forbidden tracked path: ${relative}`);
     }
   }
@@ -336,20 +401,38 @@ function validateWorkspaceContents(workspacePath, env) {
   if (status) throw new Error(`fresh clone contains unexpected material: ${status}`);
 }
 
-function validatePreparedWorkspace(workspacePath, branch, governance, env) {
+function validatePreparedWorkspace(workspacePath, branch, governance, env, {
+  remoteName = "source",
+  governanceHooksPath = ".githooks",
+  governanceHostRoot = "",
+} = {}) {
   const hooksPath = git(["config", "--local", "--get", "core.hooksPath"], workspacePath, env).trim();
-  if (hooksPath !== ".githooks") throw new Error(`core.hooksPath was not fixed to .githooks: ${hooksPath}`);
+  if (hooksPath !== governanceHooksPath) throw new Error(`core.hooksPath was not fixed to ${governanceHooksPath}: ${hooksPath}`);
   const currentBranch = git(["branch", "--show-current"], workspacePath, env).trim();
   if (currentBranch !== branch) throw new Error(`session branch mismatch: ${currentBranch}`);
   if (git(["rev-parse", "--is-shallow-repository"], workspacePath, env).trim() !== "false") throw new Error("disposable clone is shallow");
-  const remote = git(["config", "--get", "remote.source.url"], workspacePath, env).trim();
+  const remote = git(["config", "--get", `remote.${remoteName}.url`], workspacePath, env).trim();
   if (remote.includes("@")) throw new Error("source remote contains unexpected credential material");
-  for (const relative of [".githooks/pre-commit", "scripts/pre-commit-policy.mjs"]) {
-    const target = path.join(workspacePath, relative);
-    if (!fs.statSync(target).isFile() || fs.lstatSync(target).isSymbolicLink()) throw new Error(`governance file missing or symlinked: ${relative}`);
+  if (governance.external) {
+    const managerGovernanceRoot = path.resolve(thisManagerRoot(governance));
+    if (!governanceHostRoot || !isWithin(governanceHostRoot, managerGovernanceRoot)) throw new Error("external governance path escaped manager root");
+    for (const [target, source] of [[path.join(governanceHostRoot, "hooks", "pre-commit"), governance.hookFile], [path.join(governanceHostRoot, "pre-commit-policy.mjs"), governance.policyFile]]) {
+      if (!fs.statSync(target).isFile() || fs.lstatSync(target).isSymbolicLink()) throw new Error("external governance file missing or symlinked");
+      if (source && sha256(target) !== sha256(source)) throw new Error("external governance file does not match reviewed source");
+    }
+  } else {
+    for (const relative of [".githooks/pre-commit", "scripts/pre-commit-policy.mjs"]) {
+      const target = path.join(workspacePath, relative);
+      if (!fs.statSync(target).isFile() || fs.lstatSync(target).isSymbolicLink()) throw new Error(`governance file missing or symlinked: ${relative}`);
+    }
+    if (governance.hookFile && sha256(path.join(workspacePath, ".githooks", "pre-commit")) !== sha256(governance.hookFile)) throw new Error("installed hook does not match reviewed hook");
+    if (governance.policyFile && sha256(path.join(workspacePath, "scripts", "pre-commit-policy.mjs")) !== sha256(governance.policyFile)) throw new Error("installed policy does not match reviewed policy");
   }
-  if (governance.hookFile && sha256(path.join(workspacePath, ".githooks/pre-commit")) !== sha256(governance.hookFile)) throw new Error("installed hook does not match reviewed hook");
-  if (governance.policyFile && sha256(path.join(workspacePath, "scripts/pre-commit-policy.mjs")) !== sha256(governance.policyFile)) throw new Error("installed policy does not match reviewed policy");
+}
+
+function thisManagerRoot(governance) {
+  if (!governance.managerRoot || !path.isAbsolute(governance.managerRoot)) throw new Error("external governance manager root is required");
+  return path.join(path.resolve(governance.managerRoot), "governance");
 }
 
 function installGovernance(workspacePath, governance) {
@@ -360,6 +443,26 @@ function installGovernance(workspacePath, governance) {
     const target = path.join(workspacePath, relative);
     fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
     fs.copyFileSync(resolved, target);
+  }
+}
+
+function copyReviewedFile(source, target) {
+  if (!source) throw new Error("external governance source is required");
+  const resolved = fs.realpathSync(source);
+  const stat = fs.lstatSync(resolved);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`governance source is not a file: ${source}`);
+  fs.copyFileSync(resolved, target);
+}
+
+function restrictGovernanceTree(target) {
+  const stat = fs.lstatSync(target);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("external governance root is not a real directory");
+  fs.chmodSync(target, 0o700);
+  for (const entry of fs.readdirSync(target, { withFileTypes: true })) {
+    const full = path.join(target, entry.name);
+    if (entry.isDirectory()) restrictGovernanceTree(full);
+    else if (entry.isFile()) fs.chmodSync(full, 0o555);
+    else throw new Error(`external governance contains unsupported entry: ${full}`);
   }
 }
 
