@@ -50,6 +50,22 @@ test("runtime state persistence excludes the relay bearer", () => {
   assert.equal("relayToken" in persisted.resources, false);
 });
 
+test("status adopts the validated manager root recorded by an active runtime", () => {
+  const runtimeRoot = path.join(base, "persisted-manager-runtime");
+  const recordedManagerRoot = path.join(os.tmpdir(), `chatgpt-local-bridge-s5-recorded-${process.pid}`);
+  const writer = new S5Runtime({
+    runtimeRoot,
+    managerRoot: recordedManagerRoot,
+    platform: "darwin",
+    securityBin: security,
+    spawnSupervisor: false,
+  });
+  writer.ensureRuntimeRoot();
+  writer.writeState({ version: 1, kind: "s5-runtime", phase: "starting", sessionId: "s5-test-0123456789abcdef", managerRoot: recordedManagerRoot, resources: makeResources() });
+  const reader = new S5Runtime({ runtimeRoot, platform: "darwin", securityBin: security, spawnSupervisor: false });
+  assert.equal(reader.managerRoot, recordedManagerRoot);
+});
+
 test("the tunnel identifier is ephemeral tunnel-plane input, not profile state", () => {
   const runtime = new S5Runtime({
     runtimeRoot: path.join(base, "tunnel-id-runtime"),
@@ -107,6 +123,30 @@ test("sidecar cache recovery rejects a non-matching digest", () => {
     run: () => ({ status: 0, stdout: "node@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n" }),
   };
   assert.throws(() => runtime.ensurePinnedSidecarImage(), /pinned sidecar image digest verification failed/);
+});
+
+test("control-plane health keeps a bounded redacted retry diagnostic", () => {
+  const runtime = new S5Runtime({
+    runtimeRoot: path.join(base, "control-plane-runtime"),
+    managerRoot: path.join(os.tmpdir(), `chatgpt-local-bridge-s5-control-plane-${process.pid}`),
+    platform: "darwin",
+    securityBin: security,
+    spawnSupervisor: false,
+  });
+  runtime.docker = {
+    run: () => ({
+      status: 2,
+      stdout: JSON.stringify({
+        result: "not_ready",
+        healthz: { ok: true, status: 200, body: "live" },
+        readyz: { ok: true, status: 200, body: "ready" },
+        control_plane_poll: { ok: false, error: "pending tunnel_s5_sensitive" },
+      }),
+    }),
+  };
+  assert.equal(runtime.tunnelControlPlaneReady("s5-test-0123456789ab-tunnel"), false);
+  assert.match(runtime.lastTunnelControlPlaneDiagnostic, /control-plane-poll=fail/);
+  assert.doesNotMatch(runtime.lastTunnelControlPlaneDiagnostic, /tunnel_s5_sensitive/);
 });
 
 test("pending waitFor keeps a process alive until its predicate succeeds", async () => {

@@ -51,7 +51,7 @@ const CONTROL_PLANE_TIMEOUT_MS = 60_000;
 export class S5Runtime {
   constructor({
     runtimeRoot = process.env.S5_RUNTIME_ROOT || DEFAULT_RUNTIME_ROOT,
-    managerRoot = process.env.S5_MANAGER_ROOT || defaultManagerRoot(),
+    managerRoot = process.env.S5_MANAGER_ROOT || undefined,
     repoRoot = REPO_ROOT,
     docker = new DockerDriver({ cwd: repoRoot }),
     platform = process.platform,
@@ -60,8 +60,6 @@ export class S5Runtime {
   } = {}) {
     this.runtimeRoot = path.resolve(runtimeRoot);
     assertSafeRuntimeRoot(this.runtimeRoot);
-    this.managerRoot = path.resolve(managerRoot);
-    assertSafeS5ManagerRoot(this.managerRoot);
     this.repoRoot = path.resolve(repoRoot);
     this.docker = docker;
     this.platform = platform;
@@ -72,6 +70,9 @@ export class S5Runtime {
     this.overrideFile = path.join(this.runtimeRoot, OVERRIDE_FILE_NAME);
     this.auditRoot = path.join(this.runtimeRoot, "audit");
     this.tempRoot = path.join(this.runtimeRoot, "tmp");
+    const persistedManagerRoot = managerRoot ? "" : managerRootFromRuntimeState(this.stateFile);
+    this.managerRoot = path.resolve(managerRoot || persistedManagerRoot || defaultManagerRoot());
+    assertSafeS5ManagerRoot(this.managerRoot);
   }
 
   async start({ source, tunnelId, sessionId = "", tunnelClientBin, releaseDir, caBundle = "" } = {}) {
@@ -177,7 +178,10 @@ export class S5Runtime {
       if (createdSession && session) {
         try { manager.destroy(session.sessionId); } catch {}
       }
-      this.audit("runtime.start", session?.sessionId || null, "failed", { reason: safeFailure(error) });
+      this.audit("runtime.start", session?.sessionId || null, "failed", {
+        reason: safeFailure(error),
+        controlPlaneDiagnostic: this.lastTunnelControlPlaneDiagnostic || "not observed",
+      });
       this.removeStateArtifacts(state);
       throw new Error(`S5 start blocked: ${safeFailure(error)}`);
     }
@@ -480,7 +484,13 @@ export class S5Runtime {
   async startTunnelAndWait(resources, state) {
     this.docker.checked(["start", resources.tunnelName]);
     await this.waitFor(() => this.tunnelReady(resources.tunnelName), "tunnel-client /readyz", READY_TIMEOUT_MS);
-    await this.waitFor(() => this.tunnelControlPlaneReady(resources.tunnelName), "tunnel-client control-plane poll", CONTROL_PLANE_TIMEOUT_MS);
+    try {
+      await this.waitFor(() => this.tunnelControlPlaneReady(resources.tunnelName), "tunnel-client control-plane poll", CONTROL_PLANE_TIMEOUT_MS);
+    } catch (error) {
+      const diagnostic = this.lastTunnelControlPlaneDiagnostic;
+      if (diagnostic) throw new Error(`${safeFailure(error)}; last control-plane health: ${diagnostic}`);
+      throw error;
+    }
     state.readiness.controlPlanePoll = "ready";
     this.writeState(state);
     const doctor = this.docker.checked(["exec", resources.tunnelName, "/opt/tunnel-client", "doctor", "--profile-file", "/run/tunnel/profile.yaml", "--health.listen-addr", "127.0.0.1:0", "--explain"]);
@@ -590,7 +600,9 @@ export class S5Runtime {
     const result = this.docker.run(["exec", name, "/opt/tunnel-client", "health", "--port", "8080", "--json", "--require-control-plane-poll"]);
     let report;
     try { report = JSON.parse(result.stdout || ""); } catch { throw new Error("tunnel-client health returned malformed output"); }
-    return parseTunnelControlPlaneHealthReport(result.status, report).ready;
+    const parsed = parseTunnelControlPlaneHealthReport(result.status, report);
+    this.lastTunnelControlPlaneDiagnostic = sanitizeOutput(parsed.diagnostic).slice(0, 240);
+    return parsed.ready;
   }
 
   assertBridgeBoundary(resources) {
@@ -1019,6 +1031,11 @@ function readJson(filePath) {
   try { return JSON.parse(fs.readFileSync(filePath, "utf8")); } catch { return null; }
 }
 
+function managerRootFromRuntimeState(stateFile) {
+  const state = readJson(stateFile);
+  return state?.kind === "s5-runtime" && typeof state.managerRoot === "string" ? state.managerRoot : "";
+}
+
 function check(name, pass, detail) { return { name, pass: Boolean(pass), detail: pass ? "ok" : String(detail) }; }
 
 function safeFailure(error) {
@@ -1029,7 +1046,8 @@ function sanitizeOutput(value) {
   return String(value || "")
     .replace(/Bearer\s+\S+/gi, "Bearer <redacted>")
     .replace(/(?:CONTROL_PLANE_API_KEY|OPENAI_API_KEY|S3_RELAY_TOKEN|S5_RELAY_AUTH_HEADER)=\S+/g, "$1=<redacted>")
-    .replace(/sk-[A-Za-z0-9_-]+/g, "sk-<redacted>");
+    .replace(/sk-[A-Za-z0-9_-]+/g, "sk-<redacted>")
+    .replace(/tunnel_[A-Za-z0-9_-]+/g, "tunnel_<redacted>");
 }
 
 function assertNoCredentialEnv(entries, { allowRelay = false, tunnel = false } = {}) {
