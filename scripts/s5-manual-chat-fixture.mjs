@@ -33,8 +33,8 @@ export function prepareManualChatFixture({ managerRoot, repoRoot, governance, pr
   try {
     session = manager.create();
     const baseline = verifyManualChatFixture({ workspacePath: session.workspacePath, sourceRoot, governance, expectedBranch: session.branch, gitEnv: manager.gitEnv() });
-    const commitPrerequisite = validateDisposableCommitPrerequisite({ manager, sourceRoot, governance });
-    return { session, sourceRoot, baseline: { ...baseline, ...commitPrerequisite } };
+    const disposableContracts = validateDisposableProofContracts({ manager, sourceRoot, governance });
+    return { session, sourceRoot, baseline: { ...baseline, ...disposableContracts } };
   } catch (error) {
     if (session) manager.destroy(session.sessionId);
     throw error;
@@ -105,7 +105,7 @@ function verifyRepositoryGitIdentity(workspacePath, gitEnv) {
   return { repoLocalGitIdentity: "PASS" };
 }
 
-function validateDisposableCommitPrerequisite({ manager, sourceRoot, governance }) {
+function validateDisposableProofContracts({ manager, sourceRoot, governance }) {
   let validationSession;
   try {
     validationSession = manager.create();
@@ -118,6 +118,20 @@ function validateDisposableCommitPrerequisite({ manager, sourceRoot, governance 
       gitEnv,
     });
     if (baseline.repoLocalGitIdentity !== "PASS") throw new Error("manual Chat fixture commit prerequisite lacks local Git identity");
+    const proofPath = path.join(validationSession.workspacePath, WORKFLOW_PROOF_FILE);
+    fs.appendFileSync(proofPath, WORKFLOW_PROOF_APPEND);
+    if (fs.readFileSync(proofPath, "utf8") !== WORKFLOW_PROOF_POST_MUTATION) {
+      throw new Error("manual Chat fixture post-append proof state is not exact");
+    }
+    runFixtureTest(validationSession.workspacePath, gitEnv);
+    fs.writeFileSync(proofPath, WORKFLOW_PROOF_BASELINE, { mode: 0o600 });
+    verifyManualChatFixture({
+      workspacePath: validationSession.workspacePath,
+      sourceRoot,
+      governance,
+      expectedBranch: validationSession.branch,
+      gitEnv,
+    });
     const target = path.join(validationSession.workspacePath, COMMIT_PREREQUISITE_FILE);
     fs.writeFileSync(target, "S5 disposable commit prerequisite\n", { mode: 0o600 });
     git(["add", "--", COMMIT_PREREQUISITE_FILE], validationSession.workspacePath, gitEnv);
@@ -125,7 +139,7 @@ function validateDisposableCommitPrerequisite({ manager, sourceRoot, governance 
     if (git(["show", "--format=%s", "--no-patch", "HEAD"], validationSession.workspacePath, gitEnv).trim() !== "S5 disposable commit prerequisite") {
       throw new Error("manual Chat fixture disposable commit prerequisite did not create the expected commit");
     }
-    return { commitPrerequisite: "PASS" };
+    return { postAppendProjectTest: "PASS", commitPrerequisite: "PASS" };
   } finally {
     if (validationSession) manager.destroy(validationSession.sessionId);
   }

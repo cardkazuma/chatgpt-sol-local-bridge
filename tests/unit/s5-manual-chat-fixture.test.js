@@ -43,6 +43,7 @@ test("manual Chat fixture preparation requires a clean tracked proof baseline an
   assert.equal(prepared.baseline.trackedWorktreeClean, true);
   assert.equal(prepared.baseline.baselineProjectTest, "PASS");
   assert.equal(prepared.baseline.repoLocalGitIdentity, "PASS");
+  assert.equal(prepared.baseline.postAppendProjectTest, "PASS");
   assert.equal(prepared.baseline.commitPrerequisite, "PASS");
   assert.equal(prepared.baseline.hookPath, "PASS");
   assert.equal(runGit(["status", "--porcelain", "--untracked-files=all"], workspacePath, gitEnv), "");
