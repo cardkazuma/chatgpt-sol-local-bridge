@@ -4,7 +4,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { prepareManualChatFixture, verifyManualChatFixture } from "../../scripts/s5-manual-chat-fixture.mjs";
+import {
+  prepareManualChatFixture,
+  verifyManualChatFixture,
+  WORKFLOW_PROOF_APPEND,
+  WORKFLOW_PROOF_BASELINE,
+  WORKFLOW_PROOF_FILE,
+  WORKFLOW_PROOF_POST_MUTATION,
+} from "../../scripts/s5-manual-chat-fixture.mjs";
 
 const base = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-s5-manual-chat-fixture-test-"));
 const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..");
@@ -35,15 +42,32 @@ test("manual Chat fixture preparation requires a clean tracked proof baseline an
   assert.equal(prepared.baseline.trackedWorktreeClean, true);
   assert.equal(prepared.baseline.baselineProjectTest, "PASS");
   assert.equal(runGit(["status", "--porcelain", "--untracked-files=all"], workspacePath, gitEnv), "");
-  assert.equal(runGit(["ls-files", "--error-unmatch", "workflow-proof.txt"], workspacePath, gitEnv), "workflow-proof.txt\n");
-  assert.equal(fs.readFileSync(path.join(workspacePath, "workflow-proof.txt"), "utf8"), "S5 manual Chat proof baseline\n");
+  assert.equal(runGit(["ls-files", "--error-unmatch", WORKFLOW_PROOF_FILE], workspacePath, gitEnv), `${WORKFLOW_PROOF_FILE}\n`);
+  assert.equal(fs.readFileSync(path.join(workspacePath, WORKFLOW_PROOF_FILE), "utf8"), WORKFLOW_PROOF_BASELINE);
+  assert.equal(runGit(["config", "--local", "--get", "core.hooksPath"], workspacePath, gitEnv), ".githooks\n");
+  assert.equal(runProjectTest(workspacePath, gitEnv), 0, "baseline project_test should pass");
 
-  fs.rmSync(path.join(workspacePath, "workflow-proof.txt"));
+  fs.appendFileSync(path.join(workspacePath, WORKFLOW_PROOF_FILE), WORKFLOW_PROOF_APPEND);
+  assert.equal(fs.readFileSync(path.join(workspacePath, WORKFLOW_PROOF_FILE), "utf8"), WORKFLOW_PROOF_POST_MUTATION);
+  assert.equal(runProjectTest(workspacePath, gitEnv), 0, "exact intended appended proof line should pass project_test");
+
+  fs.appendFileSync(path.join(workspacePath, WORKFLOW_PROOF_FILE), WORKFLOW_PROOF_APPEND);
+  assert.notEqual(runProjectTest(workspacePath, gitEnv), 0, "duplicate proof line should fail project_test");
+  fs.writeFileSync(path.join(workspacePath, WORKFLOW_PROOF_FILE), `${WORKFLOW_PROOF_BASELINE}wrong proof text\n`);
+  assert.notEqual(runProjectTest(workspacePath, gitEnv), 0, "wrong proof text should fail project_test");
+  fs.writeFileSync(path.join(workspacePath, WORKFLOW_PROOF_FILE), `${WORKFLOW_PROOF_BASELINE}extra line\n${WORKFLOW_PROOF_APPEND}`);
+  assert.notEqual(runProjectTest(workspacePath, gitEnv), 0, "unexpected extra lines should fail project_test");
+  fs.writeFileSync(path.join(workspacePath, WORKFLOW_PROOF_FILE), "S5 manual Chat proof altered\n");
+  assert.notEqual(runProjectTest(workspacePath, gitEnv), 0, "altered baseline should fail project_test");
+  fs.writeFileSync(path.join(workspacePath, WORKFLOW_PROOF_FILE), WORKFLOW_PROOF_APPEND);
+  assert.notEqual(runProjectTest(workspacePath, gitEnv), 0, "missing baseline should fail project_test");
+
+  fs.rmSync(path.join(workspacePath, WORKFLOW_PROOF_FILE));
   assert.throws(
     () => verifyManualChatFixture({ workspacePath, sourceRoot: prepared.sourceRoot, governance, expectedBranch: prepared.session.branch, gitEnv }),
     /worktree is not clean/,
   );
-  runGit(["checkout", "--", "workflow-proof.txt"], workspacePath, gitEnv);
+  runGit(["checkout", "--", WORKFLOW_PROOF_FILE], workspacePath, gitEnv);
   fs.chmodSync(path.join(workspacePath, "scripts", "pre-commit-policy.mjs"), 0o600);
   fs.appendFileSync(path.join(workspacePath, "scripts", "pre-commit-policy.mjs"), "\n// dirty fixture regression\n");
   assert.throws(
@@ -56,4 +80,8 @@ function runGit(args, cwd, env) {
   const result = spawnSync("git", args, { cwd, env, encoding: "utf8" });
   if (result.status !== 0) throw new Error(result.stderr || result.stdout || "git failed");
   return result.stdout || "";
+}
+
+function runProjectTest(cwd, env) {
+  return spawnSync("npm", ["test"], { cwd, env, encoding: "utf8", timeout: 60_000 }).status;
 }

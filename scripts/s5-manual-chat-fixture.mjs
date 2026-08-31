@@ -4,8 +4,10 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { DisposableWorkspaceManager } from "./disposable-workspace.mjs";
 
-const WORKFLOW_PROOF_FILE = "workflow-proof.txt";
-const WORKFLOW_PROOF_BASELINE = "S5 manual Chat proof baseline\n";
+export const WORKFLOW_PROOF_FILE = "workflow-proof.txt";
+export const WORKFLOW_PROOF_BASELINE = "S5 manual Chat proof baseline\n";
+export const WORKFLOW_PROOF_APPEND = "S5 ordinary Chat proof\n";
+export const WORKFLOW_PROOF_POST_MUTATION = `${WORKFLOW_PROOF_BASELINE}${WORKFLOW_PROOF_APPEND}`;
 const FORBIDDEN_BASENAMES = new Set([".env", "db.env", "secrets.yaml", "secrets.yml", "secrets.json"]);
 const FORBIDDEN_DIRECTORIES = new Set([".storage", "backups", "runtime", "node_modules"]);
 
@@ -84,8 +86,10 @@ function createReviewedFixtureSource({ sourceRoot, repoRoot }) {
     "import test from 'node:test';",
     "import assert from 'node:assert/strict';",
     "import fs from 'node:fs';",
-    "test('manual Chat workflow proof baseline', () => {",
-    `  assert.equal(fs.readFileSync(${JSON.stringify(WORKFLOW_PROOF_FILE)}, 'utf8'), ${JSON.stringify(WORKFLOW_PROOF_BASELINE)});`,
+    "test('manual Chat workflow proof contract', () => {",
+    `  const validStates = new Set(${JSON.stringify([WORKFLOW_PROOF_BASELINE, WORKFLOW_PROOF_POST_MUTATION])});`,
+    `  const actual = fs.readFileSync(${JSON.stringify(WORKFLOW_PROOF_FILE)}, 'utf8');`,
+    "  assert.equal(validStates.has(actual), true, 'workflow-proof.txt must be the clean baseline or exactly one intended appended proof line');",
     "});",
     "",
   ].join("\n"));
