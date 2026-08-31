@@ -44,8 +44,7 @@ const gitEnv = {
   GIT_ASKPASS: "/usr/bin/false",
   GIT_SSH_COMMAND: "/usr/bin/false",
 };
-const credentialTempRoot = path.join(managerRoot, "credential-tmp");
-const credentialRounds = [];
+const credentialDelegationRounds = [];
 let remoteSha = null;
 
 test.after(() => {
@@ -95,6 +94,7 @@ test("S6 credential-time Git invocations isolate hooks, templates, and repositor
     repository: path.join(isolationBase, "repository-hook-ran"),
     global: path.join(isolationBase, "global-hook-ran"),
     helper: path.join(isolationBase, "credential-helper-ran"),
+    trustedHelper: path.join(isolationBase, "trusted-credential-helper-ran"),
     askpass: path.join(isolationBase, "repository-askpass-ran"),
   };
   const sessionId = "s6-hookproof-0123456789abcdef";
@@ -112,7 +112,6 @@ test("S6 credential-time Git invocations isolate hooks, templates, and repositor
     GIT_ASKPASS: "/usr/bin/false",
     GIT_SSH_COMMAND: "/usr/bin/false",
   };
-  const credentialRoot = path.join(isolationManagerRoot, "credential-test");
   let credentialCalls = 0;
   let authServerProcess;
   try {
@@ -130,8 +129,10 @@ test("S6 credential-time Git invocations isolate hooks, templates, and repositor
     fs.mkdirSync(globalHooks, { recursive: true, mode: 0o700 });
     writeExecutable(path.join(globalHooks, "pre-push"), hookScript(markers.global));
     const replacementHelper = path.join(isolationBase, "credential-helper");
+    const trustedHelper = path.join(isolationBase, "trusted-credential-helper");
     const replacementAskpass = path.join(isolationBase, "repository-askpass");
     writeExecutable(replacementHelper, hookScript(markers.helper));
+    writeExecutable(trustedHelper, credentialHelperScript(markers.trustedHelper));
     writeExecutable(replacementAskpass, hookScript(markers.askpass));
 
     runGit(["remote", "add", "origin", S6_REPOSITORY_URL], workspace, setupEnv);
@@ -143,14 +144,9 @@ test("S6 credential-time Git invocations isolate hooks, templates, and repositor
       bridgeRoot: repo,
       sessionId,
       platform: "linux",
-      credentialTempRoot: credentialRoot,
       credentialRunner: (_options, callback) => {
         credentialCalls += 1;
-        fs.mkdirSync(credentialRoot, { recursive: true, mode: 0o700 });
-        const directory = fs.mkdtempSync(path.join(credentialRoot, "round-"));
-        const tokenFile = path.join(directory, "token");
-        fs.writeFileSync(tokenFile, "offline-hook-isolation-token\n", { mode: 0o600 });
-        try { return callback(tokenFile); } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+        return callback({ helperBin: trustedHelper });
       },
     });
     const emptyHooks = path.join(isolationManagerRoot, "broker-empty-hooks");
@@ -159,6 +155,9 @@ test("S6 credential-time Git invocations isolate hooks, templates, and repositor
     assert.equal(fs.existsSync(emptyTemplate), true, "broker-owned empty template directory is required");
     assert.deepEqual(fs.readdirSync(emptyHooks), []);
     assert.deepEqual(fs.readdirSync(emptyTemplate), []);
+    assert.equal(broker.gitEnvironment().HOME, path.join(isolationManagerRoot, "git-home"));
+    assert.equal(broker.gitEnvironment().XDG_CONFIG_HOME, path.join(isolationManagerRoot, "git-home", "config"));
+    assert.equal(broker.gitEnvironment().GIT_CONFIG_NOSYSTEM, "1");
     assert.equal(broker.gitEnvironment().GIT_CONFIG_SYSTEM, "/dev/null");
     assert.equal(broker.gitEnvironment().GIT_CONFIG_GLOBAL, "/dev/null");
     assert.equal(broker.gitEnvironment().GIT_TEMPLATE_DIR, emptyTemplate);
@@ -179,28 +178,39 @@ test("S6 credential-time Git invocations isolate hooks, templates, and repositor
     authServerProcess = spawn(process.execPath, ["-e", authenticationServerSource(), authProbeMarker], { stdio: ["ignore", "pipe", "pipe"] });
     const authPort = await waitForChildPort(authServerProcess);
     runGit(["remote", "set-url", "origin", `http://127.0.0.1:${authPort}/s6.git`], workspace, setupEnv);
-    const authResult = broker.withCredential(({ tokenFile, askpassFile }) => broker.gitStatusWithCredential(["ls-remote", "--heads", "origin"], workspace, { tokenFile, askpassFile }));
+    const authResult = broker.withCredential(({ credentialHelper }) => broker.gitStatusWithCredential(["ls-remote", "--heads", "origin"], workspace, { credentialHelper }));
     assert.notEqual(authResult.status, 0, "local authentication probe must not succeed");
-    assert.equal(fs.existsSync(authProbeMarker), true, "local authentication probe was not reached");
+    assert.equal(fs.existsSync(authProbeMarker), false, "non-HTTPS arbitrary host was reached during credential scope");
     await stopChild(authServerProcess);
     authServerProcess = null;
     assert.equal(fs.existsSync(markers.helper), false, "repository credential helper executed during credential scope");
     assert.equal(fs.existsSync(markers.askpass), false, "repository askpass executed during credential scope");
+    assert.equal(fs.existsSync(markers.trustedHelper), false, "credential helper ran for a denied protocol");
+    assert.doesNotMatch(`${authResult.stdout || ""}${authResult.stderr || ""}`, /offline-trusted-helper-secret/, "credential helper output entered Git diagnostics");
+
+    const helperResult = broker.withCredential(({ credentialHelper }) => broker.gitStatusWithCredential(
+      ["credential", "reject"], workspace, { credentialHelper }, { input: "protocol=https\nhost=github.com\n\n" },
+    ));
+    assert.equal(helperResult.status, 0, helperResult.stderr || helperResult.stdout);
+    assert.equal(fs.existsSync(markers.trustedHelper), true, "fixed trusted credential helper was not delegated to Git");
+    assert.equal(fs.existsSync(markers.helper), false, "repository credential helper replaced the fixed trusted helper");
+    assert.equal(fs.existsSync(markers.askpass), false, "repository askpass executed during credential delegation");
+    assert.doesNotMatch(`${helperResult.stdout || ""}${helperResult.stderr || ""}`, /offline-trusted-helper-secret/, "credential helper output entered Git diagnostics");
 
     runGit(["init", "--bare", "-q", bareRemote], isolationBase, setupEnv);
     runGit(["remote", "set-url", "origin", bareRemote], workspace, setupEnv);
-    const firstPush = broker.withCredential(({ tokenFile, askpassFile }) => broker.gitStatusWithCredential(["push", "--porcelain", "origin", `HEAD:refs/heads/${branch}`], workspace, { tokenFile, askpassFile }));
+    const firstPush = broker.withCredential(({ credentialHelper }) => broker.gitStatusWithCredential(["-c", "protocol.file.allow=always", "push", "--porcelain", "origin", `HEAD:refs/heads/${branch}`], workspace, { credentialHelper }));
     assert.equal(firstPush.status, 0, firstPush.stderr || firstPush.stdout);
     runGit(["config", "--local", "--unset-all", "core.hooksPath"], workspace, setupEnv);
     fs.appendFileSync(path.join(workspace, "README.md"), "second push\n");
     runGit(["add", "--", "README.md"], workspace, setupEnv);
     runGit(["commit", "--no-verify", "-qm", "S6 hook isolation second push"], workspace, setupEnv);
-    const secondPush = broker.withCredential(({ tokenFile, askpassFile }) => broker.gitStatusWithCredential(["push", "--porcelain", "origin", `HEAD:refs/heads/${branch}`], workspace, { tokenFile, askpassFile }));
+    const secondPush = broker.withCredential(({ credentialHelper }) => broker.gitStatusWithCredential(["-c", "protocol.file.allow=always", "push", "--porcelain", "origin", `HEAD:refs/heads/${branch}`], workspace, { credentialHelper }));
     assert.equal(secondPush.status, 0, secondPush.stderr || secondPush.stdout);
     for (const marker of [markers.repository, markers.template, markers.global]) {
       assert.equal(fs.existsSync(marker), false, `untrusted hook executed during credential scope: ${path.basename(marker)}`);
     }
-    assert.equal(fs.readdirSync(credentialRoot).length, 0, "credential callback material was not cleaned");
+    assert.equal(fs.existsSync(path.join(isolationManagerRoot, "credential-tmp")), false, "credential material directory was created");
   } finally {
     await stopChild(authServerProcess);
     fs.rmSync(isolationBase, { recursive: true, force: true });
@@ -237,8 +247,8 @@ test("S6 broker independently validates a clean linear graph and rejects bypasse
   assert.equal(session.coreHooksPath, S6_GOVERNANCE_HOOKS_PATH);
   assert.equal(readGit(["config", "--local", "--get", "remote.origin.url"], session.workspacePath), S6_REPOSITORY_URL);
   assert.equal(readGit(["config", "--local", "--get", "core.hooksPath"], session.workspacePath), S6_GOVERNANCE_HOOKS_PATH);
-  assert.equal(credentialRounds.length, 1);
-  assert.equal(fs.readdirSync(credentialTempRoot).length, 0);
+  assert.equal(credentialDelegationRounds.length, 1);
+  assert.equal(fs.existsSync(path.join(managerRoot, "credential-tmp")), false);
   await assert.rejects(() => broker.publishBranch(), /at least one reviewed local commit/);
 
   const first = commitWithReviewedHook(session, "README.md", "S6 reviewed edit\n", "S6 reviewed edit");
@@ -364,6 +374,27 @@ test("S6 broker socket protocol carries no caller-selected target", async () => 
   assert.throws(() => s6RemoteRefForSession("s5-protocol-0123456789abcdef"), /invalid/);
 });
 
+test("S6 failure diagnostics redact synthetic credential material", () => {
+  const session = "s6-redaction-0123456789abcdef";
+  const redactionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "chatgpt-local-bridge-s6-redaction-"));
+  try {
+    const broker = new S6GitHubBroker({
+      managerRoot: redactionRoot,
+      bridgeRoot: repo,
+      sessionId: session,
+      platform: "linux",
+      gitRunner: () => ({ status: 128, stdout: "", stderr: "fatal: password=offline-helper-secret" }),
+    });
+    assert.throws(() => broker.gitResult(["ls-remote", "origin"], redactionRoot), (error) => {
+      assert.match(error.message, /<redacted>/);
+      assert.doesNotMatch(error.message, /offline-helper-secret/);
+      return true;
+    });
+  } finally {
+    fs.rmSync(redactionRoot, { recursive: true, force: true });
+  }
+});
+
 test("S6 accepts only exact fast-forward or new-branch push receipts", () => {
   const ref = "refs/heads/bridge/s6/s6-receipt-0123456789abcdef";
   const oldSha = "a".repeat(40);
@@ -379,7 +410,6 @@ function makeBroker(sessionId, withRemote = false) {
     bridgeRoot: repo,
     sessionId,
     platform: "linux",
-    credentialTempRoot,
     gitRunner: offlineGitRunner,
     credentialRunner: fakeCredentialRunner,
     remoteAdapter: withRemote ? {
@@ -394,12 +424,8 @@ function makeBroker(sessionId, withRemote = false) {
 }
 
 function fakeCredentialRunner(_options, callback) {
-  fs.mkdirSync(credentialTempRoot, { recursive: true, mode: 0o700 });
-  const directory = fs.mkdtempSync(path.join(credentialTempRoot, "round-"));
-  const tokenFile = path.join(directory, "token");
-  fs.writeFileSync(tokenFile, "offline-fixture-token\n", { mode: 0o600 });
-  credentialRounds.push(directory);
-  try { return callback(tokenFile); } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  credentialDelegationRounds.push(Date.now());
+  return callback({ helperBin: "/usr/bin/false" });
 }
 
 function offlineGitRunner(args, cwd, env) {
@@ -476,6 +502,10 @@ function writeExecutable(target, content) {
 
 function hookScript(marker) {
   return `#!/bin/sh\nset -eu\nprintf '%s\\n' "credential-visible=\${S6_GITHUB_TOKEN_FILE:+yes}" > ${shellQuote(marker)}\n`;
+}
+
+function credentialHelperScript(marker) {
+  return `#!/bin/sh\nset -eu\nprintf '%s\\n' delegated > ${shellQuote(marker)}\nif [ "\${1-}" = get ]; then\n  printf '%s\\n' 'username=offline-user' 'password=offline-trusted-helper-secret' ''\nfi\n`;
 }
 
 function shellQuote(value) { return `'${String(value).replace(/'/g, `'"'"'`)}'`; }

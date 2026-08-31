@@ -119,8 +119,6 @@ export class S6Runtime extends S5Runtime {
       bridgeRoot: this.repoRoot,
       sessionId,
       platform: this.platform,
-      securityBin: this.securityBin,
-      credentialTempRoot: path.join(this.managerRoot, "credential-tmp"),
     });
   }
 
@@ -140,7 +138,7 @@ export class S6Runtime extends S5Runtime {
     const socketPath = s6BrokerSocketPath(this.managerRoot, sessionId);
     const child = spawn(process.execPath, [BROKER_SCRIPT, "serve", "--manager-root", this.managerRoot, "--session", sessionId], {
       cwd: this.repoRoot,
-      env: safeHostEnvironment(),
+      env: brokerHostEnvironment(this.managerRoot),
       stdio: ["ignore", "pipe", "pipe"],
       shell: false,
     });
@@ -289,7 +287,7 @@ export class S6Runtime extends S5Runtime {
 
   status(options = {}) {
     const value = super.status(options);
-    return { ...value, githubCredentialPlane: s6CredentialProbe({ platform: this.platform, securityBin: this.securityBin }) };
+    return { ...value, githubCredentialPlane: s6CredentialProbe({ platform: this.platform }) };
   }
 }
 
@@ -336,6 +334,19 @@ function safeHostEnvironment() {
   return env;
 }
 
+function brokerHostEnvironment(managerRoot) {
+  const home = path.join(managerRoot, "git-home");
+  fs.mkdirSync(path.join(home, "config"), { recursive: true, mode: 0o700 });
+  return {
+    PATH: process.env.PATH || "/usr/bin:/bin",
+    HOME: home,
+    XDG_CONFIG_HOME: path.join(home, "config"),
+    TMPDIR: os.tmpdir(),
+    LANG: "C",
+    LC_ALL: "C",
+  };
+}
+
 function writePrivateFile(filePath, content) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
   const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
@@ -361,7 +372,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const runtime = new S6Runtime({ runtimeRoot: args["runtime-root"] || undefined, managerRoot: args["manager-root"] || undefined });
   const [command, subcommand] = args._;
-  if (command === "keychain" && subcommand === "status") { console.log(JSON.stringify(s6CredentialProbe({ platform: process.platform }), null, 2)); return; }
+  if (command === "credential" && subcommand === "status") { console.log(JSON.stringify(s6CredentialProbe({ platform: process.platform }), null, 2)); return; }
   if (command === "start") {
     console.log(JSON.stringify(await runtime.start({ source: args.source, sessionId: args.session, tunnelId: args["tunnel-id"] || process.env.S5_TUNNEL_ID, tunnelClientBin: args["tunnel-client"] || process.env.S5_TUNNEL_CLIENT_LINUX_BIN, releaseDir: args["release-dir"] || process.env.S5_TUNNEL_RELEASE_DIR, caBundle: args["ca-bundle"] }), null, 2));
     return;
@@ -375,7 +386,7 @@ async function main() {
   if (command === "workspace" && subcommand === "list") { console.log(JSON.stringify(runtime.workspaceList(), null, 2)); return; }
   if (command === "workspace" && subcommand === "destroy") { console.log(JSON.stringify(runtime.workspaceDestroy(args.session), null, 2)); return; }
   if (command === "supervise") { await runtime.supervise(args._[1] || runtime.stateFile); return; }
-  throw new Error("usage: s6-runtime.mjs {keychain status|start|status|doctor|stop|recover|rollback|workspace create|workspace list|workspace destroy|supervise}");
+  throw new Error("usage: s6-runtime.mjs {credential status|start|status|doctor|stop|recover|rollback|workspace create|workspace list|workspace destroy|supervise}");
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {

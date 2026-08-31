@@ -2,8 +2,8 @@
 
 The S1 model below remains the foundation. S6 adds one host-side remote-write
 authority: the controller may source only private `cardkazuma/homelab` and
-publish only the active manager-generated S6 branch. The offline implementation
-has not provisioned a real PAT or performed a real GitHub clone/push.
+publish only the active manager-generated S6 branch. S6 creates no dedicated
+credential and has not yet performed a real GitHub clone/push.
 
 ## Primary boundary
 
@@ -108,29 +108,31 @@ force-with-lease, wildcard, deletion, alternate remote, caller refspec, GitHub
 API, PR, or merge path. It reads the remote SHA back and persists/returns only
 sanitized metadata and evidence.
 
-The preferred future credential is an expiring fine-grained PAT with access
-only to `cardkazuma/homelab` and Contents read/write permission. It uses a
-dedicated fixed macOS Keychain service/account separate from S5. The operator
-enters it only through the local Keychain path; the host broker scopes it to a
-manager-owned mode-0600 temporary file, uses an isolated HOME/XDG Git config,
-`GIT_CONFIG_NOSYSTEM=1`, disabled prompts, no normal-user helper, and SSH
-disabled, then deterministically removes the file. The token is never in a
-URL, argv, shell history, tracked config, workspace, bridge/tool-child
-environment, logs, audit, or evidence. Offline tests use synthetic tokens only.
+S6 reuses the Mac's existing developer GitHub HTTPS authentication through
+Git-native credential delegation. The observed normal Git mechanism is the
+Apple `osxkeychain` helper installed by Command Line Tools. Before delegation,
+the broker verifies the fixed executable is root-owned, executable,
+non-symlinked, and Apple-signed with the reviewed identifier/team. Credentialed
+Git uses a manager-owned HOME/XDG tree, `GIT_CONFIG_NOSYSTEM=1`, explicit null
+system/global configuration, disabled prompts/askpass/SSH, an empty helper
+reset, and then only the fixed HTTPS GitHub helper. Normal-user Git config and
+home are not exposed. Git invokes the helper through the credential protocol;
+the broker never retrieves, stores, copies, logs, or audits the credential
+value. Offline tests use synthetic helpers only.
 
 The bridge container remains `network_mode: none`, credential-free, non-root,
 read-only-rootfs, capability-dropped, and no-new-privileges. A fixed per-session
 Unix socket carries only an in-memory capability and fixed register/attest/
 empty-input publish messages. The host broker is not a shell, HTTP proxy,
-generic Git proxy, or credential helper. Its credential-bearing Git subprocesses
+generic Git proxy, or credential helper. Its credential-delegating Git subprocesses
 set `core.hooksPath` and `GIT_TEMPLATE_DIR` to separate manager-owned, empty,
 private directories; they also ignore system/global configuration and reject
 repository aliases, filters, credential settings, hook paths, and related Git
-configuration before opening the credential callback. The normal disposable
+configuration before enabling the fixed helper. The normal disposable
 workspace still uses the reviewed pre-commit hook for structured local commits.
 The `S6 credential-time Git invocations isolate hooks, templates, and
 repository config` regression exercises malicious repository/template/global
-hooks and configuration under a synthetic credential callback.
+hooks and configuration under a synthetic trusted-helper delegation.
 
 The current private personal GitHub repository has no Rulesets or branch
 protection in the available plan. That is an explicit residual, not an

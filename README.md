@@ -4,7 +4,9 @@ This local fork is the reviewed S1–S6 bridge for ordinary repository work in a
 disposable, non-root Docker container. S6 adds a host-only broker that can,
 after a separate real-credential gate, source only `cardkazuma/homelab` and
 publish only the active session's generated `bridge/s6/<session-id>` branch.
-The offline implementation has not provisioned a GitHub credential or pushed.
+The implementation reuses the Mac's existing developer GitHub authentication
+through Git's fixed Apple `osxkeychain` credential helper; it creates no S6
+credential and has not yet pushed.
 
 The security boundary remains the container runtime. The bridge receives one
 explicit disposable workspace bind mount, has a read-only image root, no Linux
@@ -41,7 +43,7 @@ capabilities fail startup and are never registered for MCP discovery.
 ## Run the offline proofs
 
 The offline suite uses disposable local fixtures and synthetic credential
-sentinels. It does not request or use a real GitHub PAT:
+helpers. It does not request, create, extract, or use a GitHub PAT:
 
 ```sh
 npm ci --ignore-scripts --no-audit --no-fund
@@ -57,10 +59,10 @@ NAS, or `/Volumes` mount. Set its required `BRIDGE_*` interpolation values only
 to a disposable repository and its reviewed hook/config files.
 
 S6's host broker is a fixed-purpose Git transfer component, not a shell, HTTP
-proxy, generic Git proxy, credential helper, or remote endpoint. It uses a
-separate fixed macOS Keychain identity for a future expiring fine-grained PAT
-scoped to `cardkazuma/homelab` with Contents read/write only. No real PAT is
-requested by the offline commands.
+proxy, generic Git proxy, credential helper, or remote endpoint. Credentialed
+Git clears repository/global/system helpers and explicitly delegates only to
+the root-owned, Apple-signed `git-credential-osxkeychain` executable already
+used by normal developer Git. The broker never retrieves the credential value.
 
 ## Review documents
 
@@ -76,13 +78,13 @@ requested by the offline commands.
 
 S6 does not automate pull requests or merges, install a persistent service,
 access the homelab NAS or a live checkout, use SSH, control Docker, invoke
-`codex_run`, reuse host GitHub configuration, or give the bridge container
+`codex_run`, expose normal-user Git configuration/home, or give the bridge container
 network or GitHub credentials. Remote refresh is controller-owned. GitHub
 Rulesets/branch protection are not assumed; fixed broker validation remains
 the boundary.
 
 The fork remains local and reviewable at the audited upstream commit plus the
-S1–S6 changes. No production checkout, runtime data, real GitHub credential, or
+S1–S6 changes. No production checkout, runtime data, credential extraction, or
 real GitHub push is used by the offline proof.
 
 MIT. See [LICENSE](LICENSE).

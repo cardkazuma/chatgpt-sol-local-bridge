@@ -6,7 +6,7 @@ import path from "node:path";
 import net from "node:net";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { withS6GitHubTokenFile } from "./s6-credential.mjs";
+import { withS6GitCredentialHelper } from "./s6-credential.mjs";
 import {
   classifyPolicyPath,
   classifyPublishPath,
@@ -68,9 +68,10 @@ export class S6GitHubBroker {
     bridgeRoot,
     sessionId,
     platform = process.platform,
-    securityBin,
-    credentialRunner = withS6GitHubTokenFile,
-    credentialTempRoot = "",
+    credentialHelperBin,
+    codesignBin,
+    credentialExpectedUid,
+    credentialRunner = withS6GitCredentialHelper,
     gitRunner = null,
     remoteAdapter = null,
   } = {}) {
@@ -81,10 +82,10 @@ export class S6GitHubBroker {
     this.bridgeRoot = path.resolve(bridgeRoot);
     this.sessionId = sessionId;
     this.platform = platform;
-    this.securityBin = securityBin;
+    this.credentialHelperBin = credentialHelperBin;
+    this.codesignBin = codesignBin;
+    this.credentialExpectedUid = credentialExpectedUid;
     this.credentialRunner = credentialRunner;
-    this.credentialTempRoot = credentialTempRoot || path.join(this.managerRoot, "credential-tmp");
-    if (!path.isAbsolute(this.credentialTempRoot) || !isWithin(this.credentialTempRoot, this.managerRoot)) throw new Error("S6 credential temp root must be manager-owned");
     this.gitRunner = gitRunner;
     this.remoteAdapter = remoteAdapter;
     this.sessionsRoot = path.join(this.managerRoot, "sessions");
@@ -110,8 +111,8 @@ export class S6GitHubBroker {
   /**
    * Controller-owned materialization callback for DisposableWorkspaceManager.
    * The only networked operation is a no-checkout clone of the fixed URL while
-   * the scoped Keychain token is available. Candidate content is not checked
-   * out until the credential callback has returned and cleanup has run.
+   * Git may delegate to the fixed trusted helper. Candidate content is not
+   * checked out until that credentialed Git subprocess has exited.
    */
   materializeWorkspace({ source, remoteName, workspacePath, sessionId, managerRoot } = {}) {
     assertS6Source(source);
@@ -126,11 +127,11 @@ export class S6GitHubBroker {
     }
     ensureNoSymlinkAncestors(this.managerRoot);
     ensureParentPath(workspacePath, this.sessionsRoot);
-    this.withCredential(({ tokenFile, askpassFile }) => {
+    this.withCredential(({ credentialHelper }) => {
       this.gitResult([
         "clone", "--no-checkout", "--no-local", "--no-hardlinks", "--origin", S6_REMOTE_NAME,
         S6_REPOSITORY_URL, workspacePath,
-      ], this.managerRoot, { tokenFile, askpassFile });
+      ], this.managerRoot, { credentialHelper });
     });
     this.validateClone(workspacePath);
     const base = this.gitOutput(["rev-parse", "--verify", "refs/remotes/origin/main"], workspacePath).trim();
@@ -159,8 +160,8 @@ export class S6GitHubBroker {
     if (!commits.length) throw new Error("S6 publish requires at least one reviewed local commit beyond the expected base");
     const ref = s6RemoteRefForSession(this.sessionId);
     const publishState = this.readPublishState();
-    return this.withCredential(({ tokenFile, askpassFile }) => {
-      const remoteBefore = this.readRemoteRef(record.workspacePath, ref, { tokenFile, askpassFile });
+    return this.withCredential(({ credentialHelper }) => {
+      const remoteBefore = this.readRemoteRef(record.workspacePath, ref, { credentialHelper });
       const prior = publishState?.state === "publishing" ? (publishState.priorSha || null) : (publishState?.publishedSha || null);
       if (publishState?.state === "publishing") {
         if (![prior, publishState.targetSha].includes(remoteBefore)) {
@@ -178,11 +179,11 @@ export class S6GitHubBroker {
       if (prior === head) return publishEvidence(this.sessionId, head, base, ref, "already-published");
 
       this.writePublishedState(head, base, "publishing", { priorSha: prior });
-      const pushed = this.pushRemote(record.workspacePath, ref, { tokenFile, askpassFile });
+      const pushed = this.pushRemote(record.workspacePath, ref, { credentialHelper });
       if (pushed.oldSha !== prior || pushed.newSha !== head) {
         throw new Error("S6 push receipt did not match the recorded remote state");
       }
-      const remoteAfter = this.readRemoteRef(record.workspacePath, ref, { tokenFile, askpassFile });
+      const remoteAfter = this.readRemoteRef(record.workspacePath, ref, { credentialHelper });
       if (remoteAfter !== head) throw new Error("S6 remote read-back did not match local HEAD");
       this.writePublishedState(head, base, "published", { priorSha: prior });
       return publishEvidence(this.sessionId, head, base, ref, "published");
@@ -193,8 +194,8 @@ export class S6GitHubBroker {
     const state = this.readPublishState();
     if (!state || state.state !== "publishing") return { recovered: false, state: state?.state || "none" };
     const validation = this.validateLocalPublishState({ requireAttestations: true });
-    return this.withCredential(({ tokenFile, askpassFile }) => {
-      const remote = this.readRemoteRef(validation.record.workspacePath, state.remoteRef, { tokenFile, askpassFile });
+    return this.withCredential(({ credentialHelper }) => {
+      const remote = this.readRemoteRef(validation.record.workspacePath, state.remoteRef, { credentialHelper });
       if (remote === state.targetSha && state.targetSha === validation.head) {
         this.writePublishedState(state.targetSha, validation.base, "published", { priorSha: state.priorSha || null });
         return { recovered: true, state: "published", commit: state.targetSha };
@@ -376,17 +377,17 @@ export class S6GitHubBroker {
 
   withCredential(callback) {
     return this.credentialRunner({
-      tempRoot: this.credentialTempRoot,
-      securityBin: this.securityBin,
+      helperBin: this.credentialHelperBin,
+      codesignBin: this.codesignBin,
       platform: this.platform,
-    }, (tokenFile) => {
-      const askpassFile = path.join(path.dirname(tokenFile), "git-askpass");
-      writeAskpass(askpassFile, tokenFile);
-      return callback({ tokenFile, askpassFile });
+      expectedUid: this.credentialExpectedUid,
+    }, ({ helperBin }) => {
+      if (!path.isAbsolute(helperBin)) throw new Error("trusted S6 Git credential helper path is invalid");
+      return callback({ credentialHelper: helperBin });
     });
   }
 
-  gitEnvironment({ tokenFile = "", askpassFile = "" } = {}) {
+  gitEnvironment() {
     this.ensureGitIsolationRoots();
     const env = {
       PATH: process.env.PATH || "/usr/bin:/bin",
@@ -398,12 +399,11 @@ export class S6GitHubBroker {
       GIT_CONFIG_SYSTEM: "/dev/null",
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_TERMINAL_PROMPT: "0",
-      GIT_ASKPASS: askpassFile || "/usr/bin/false",
+      GIT_ASKPASS: "/usr/bin/false",
       GIT_SSH_COMMAND: "/usr/bin/false",
       GIT_TEMPLATE_DIR: this.brokerTemplateRoot,
       GIT_OPTIONAL_LOCKS: "0",
     };
-    if (tokenFile) env.S6_GITHUB_TOKEN_FILE = tokenFile;
     return env;
   }
 
@@ -421,10 +421,11 @@ export class S6GitHubBroker {
   }
 
   gitStatusWithCredential(args, cwd, credential = {}, options = {}) {
-    const env = this.gitEnvironment({ ...credential, ...options });
+    const { input, ...gitOptions } = options;
+    const env = this.gitEnvironment();
     return this.gitRunner
       ? this.gitRunner(args, cwd, env)
-      : spawnSync("git", gitArgs(args, cwd, { ...options, hooksPath: this.brokerHooksRoot }), { cwd, env, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
+      : spawnSync("git", gitArgs(args, cwd, { ...credential, ...gitOptions, hooksPath: this.brokerHooksRoot }), { cwd, env, encoding: "utf8", maxBuffer: 32 * 1024 * 1024, ...(input === undefined ? {} : { input }) });
   }
 
   gitOutput(args, cwd = this.workspacePath(this.sessionId), options = {}) {
@@ -575,19 +576,13 @@ export function parseBrokerReady(line) {
   return true;
 }
 
-function gitArgs(args, cwd, { disableHooks = true, hooksPath = "/dev/null" } = {}) {
+function gitArgs(args, cwd, { disableHooks = true, hooksPath = "/dev/null", credentialHelper = "" } = {}) {
   if (disableHooks && (!path.isAbsolute(hooksPath) || hooksPath === path.parse(hooksPath).root)) throw new Error("S6 broker hook directory is invalid");
+  if (credentialHelper && (!path.isAbsolute(credentialHelper) || credentialHelper === path.parse(credentialHelper).root)) throw new Error("S6 trusted credential helper path is invalid");
   return [
-    "--no-pager", "-c", `safe.directory=${cwd}`, "-c", "core.abbrev=40", "-c", "core.fsmonitor=false", "-c", "diff.external=", ...(disableHooks ? ["-c", `core.hooksPath=${hooksPath}`] : []), "-c", "credential.helper=",
+    "--no-pager", "-c", `safe.directory=${cwd}`, "-c", "core.abbrev=40", "-c", "core.fsmonitor=false", "-c", "diff.external=", "-c", "http.followRedirects=false", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", ...(disableHooks ? ["-c", `core.hooksPath=${hooksPath}`] : []), "-c", "credential.helper=", ...(credentialHelper ? ["-c", `credential.https://github.com.helper=${credentialHelper}`] : []),
     ...args,
   ];
-}
-
-function writeAskpass(target, tokenFile) {
-  const quoted = shellQuote(tokenFile);
-  const content = `#!/bin/sh\nset -eu\ncase "\${1-}" in\n  *[Uu]sername*) printf '%s\\n' x-access-token ;;\n  *) cat ${quoted}; printf '\\n' ;;\nesac\n`;
-  fs.writeFileSync(target, content, { encoding: "utf8", mode: 0o700 });
-  fs.chmodSync(target, 0o700);
 }
 
 export function parsePushReceipt(output, ref) {
@@ -705,8 +700,6 @@ function atomicWrite(filePath, value) {
 function readJson(filePath) {
   try { return JSON.parse(fs.readFileSync(filePath, "utf8")); } catch { return null; }
 }
-
-function shellQuote(value) { return `'${String(value).replace(/'/g, `'"'"'`)}'`; }
 
 function sanitizeGitError(value) {
   return String(value || "unknown error")
