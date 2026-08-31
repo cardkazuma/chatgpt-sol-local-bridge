@@ -9,9 +9,10 @@ The controller commands are:
 
 ```text
 node scripts/s5-runtime.mjs keychain install
+node scripts/s5-runtime.mjs tunnel configure
 node scripts/s5-runtime.mjs workspace create --source /absolute/path/to/disposable-fixture
 node scripts/s5-runtime.mjs workspace list
-node scripts/s5-runtime.mjs start --source /absolute/path/to/disposable-fixture --tunnel-id tunnel_...
+node scripts/s5-runtime.mjs start --source /absolute/path/to/disposable-fixture
 node scripts/s5-runtime.mjs status
 node scripts/s5-runtime.mjs doctor
 node scripts/s5-runtime.mjs stop
@@ -28,6 +29,13 @@ fixed macOS Keychain item identified by the controller and is handed to the
 tunnel-client container through one mode-0600 temporary env file. The bridge,
 relay, repository commands, audit records, and status output never receive the
 key.
+
+`tunnel configure` stores the existing Secure MCP Tunnel ID in the tracked
+`config/s5-tunnel.json` file. It is a reviewed, non-secret operational
+identifier, not a credential; the strict configuration schema permits no other
+fields, so API keys and credentials cannot be placed beside it. Normal `start`
+reads that file and never prompts for a tunnel ID. A `--tunnel-id` argument or
+`S5_TUNNEL_ID` remains an explicit one-run override for reviewed diagnostics.
 
 Each session is a full-history clone made without local-object hardlinks. The
 manager rejects canonical checkouts, normal-user home sources, NAS paths,

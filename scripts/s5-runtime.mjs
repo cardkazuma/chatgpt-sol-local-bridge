@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import readline from "node:readline";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DisposableWorkspaceManager } from "./disposable-workspace.mjs";
@@ -25,6 +26,7 @@ const RUNTIME_MARKER = ".s5-runtime-root";
 const STATE_FILE_NAME = "state.json";
 const PROFILE_FILE_NAME = "tunnel-profile.yaml";
 const OVERRIDE_FILE_NAME = "compose.s5.yaml";
+const TUNNEL_CONFIG_RELATIVE_PATH = path.join("config", "s5-tunnel.json");
 const SIDECAR_IMAGE = "node:22.14.0-bookworm-slim@sha256:745403dc46b5ab4c998502b07a12cbf020cf2c30645427a68ec0718f02d647de";
 const TUNNEL_VERSION = "0.0.13";
 const TUNNEL_COMMIT = "4b5267f823be0b046bb883aacb51603cfde3a0ea";
@@ -68,6 +70,7 @@ export class S5Runtime {
     this.stateFile = path.join(this.runtimeRoot, STATE_FILE_NAME);
     this.profileFile = path.join(this.runtimeRoot, PROFILE_FILE_NAME);
     this.overrideFile = path.join(this.runtimeRoot, OVERRIDE_FILE_NAME);
+    this.tunnelConfigFile = path.join(this.repoRoot, TUNNEL_CONFIG_RELATIVE_PATH);
     this.auditRoot = path.join(this.runtimeRoot, "audit");
     this.tempRoot = path.join(this.runtimeRoot, "tmp");
     const persistedManagerRoot = managerRoot ? "" : managerRootFromRuntimeState(this.stateFile);
@@ -80,7 +83,7 @@ export class S5Runtime {
     const existing = this.readState();
     if (existing) throw new Error("S5 runtime has existing state; run status or recover first");
     const staticInputs = this.resolveTunnelInputs({ tunnelClientBin, releaseDir, caBundle });
-    validateTunnelId(tunnelId);
+    const resolvedTunnelId = this.resolveTunnelId(tunnelId);
     const manager = this.createManager({ source, readOnly: !source });
     const staleSessions = manager.reapStale();
     for (const staleSession of staleSessions) this.audit("workspace.reap", staleSession, "recovered");
@@ -149,7 +152,7 @@ export class S5Runtime {
         platform: this.platform,
       }, async (credentialFile) => {
         appendLine(credentialFile, "S5_RELAY_AUTH_HEADER", `Bearer ${resources.relayToken}`);
-        this.createTunnel(resources, staticInputs, credentialFile, tunnelId);
+        this.createTunnel(resources, staticInputs, credentialFile, resolvedTunnelId);
       });
       this.assertTunnelBoundary(resources);
       await this.startTunnelAndWait(resources, state);
@@ -187,6 +190,22 @@ export class S5Runtime {
       this.removeStateArtifacts(state);
       throw new Error(`S5 start blocked: ${safeFailure(error)}`);
     }
+  }
+
+  resolveTunnelId(explicitTunnelId = "") {
+    if (explicitTunnelId) {
+      validateTunnelId(explicitTunnelId);
+      return explicitTunnelId;
+    }
+    const config = readTunnelConfiguration(this.tunnelConfigFile);
+    validateTunnelId(config.tunnelId);
+    return config.tunnelId;
+  }
+
+  configureTunnel(tunnelId) {
+    validateTunnelId(tunnelId);
+    writeTunnelConfiguration(this.tunnelConfigFile, tunnelId);
+    return { configured: true, configFile: TUNNEL_CONFIG_RELATIVE_PATH };
   }
 
   async stop() {
@@ -979,6 +998,50 @@ function validateTunnelId(value) {
   if (!/^tunnel_[A-Za-z0-9_-]+$/.test(String(value || ""))) throw new Error("tunnel ID must be supplied as a tunnel_ identifier");
 }
 
+function readTunnelConfiguration(filePath) {
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    throw new Error(`S5 tunnel configuration is required at ${TUNNEL_CONFIG_RELATIVE_PATH}; run 'node scripts/s5-runtime.mjs tunnel configure'`);
+  }
+  const expectedKeys = ["classification", "kind", "tunnelId", "version"];
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+    || JSON.stringify(Object.keys(parsed).sort()) !== JSON.stringify(expectedKeys)) {
+    throw new Error("S5 tunnel configuration must contain only the reviewed non-secret identifier fields");
+  }
+  if (parsed.kind !== "s5-tunnel-configuration" || parsed.version !== 1
+    || parsed.classification !== "non-secret operational identifier" || typeof parsed.tunnelId !== "string") {
+    throw new Error("S5 tunnel configuration is invalid");
+  }
+  return parsed;
+}
+
+function writeTunnelConfiguration(filePath, tunnelId) {
+  const parent = path.dirname(filePath);
+  fs.mkdirSync(parent, { recursive: true, mode: 0o755 });
+  const configuration = {
+    kind: "s5-tunnel-configuration",
+    version: 1,
+    classification: "non-secret operational identifier",
+    tunnelId,
+  };
+  const temporary = `${filePath}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
+  fs.writeFileSync(temporary, `${JSON.stringify(configuration, null, 2)}\n`, { encoding: "utf8", mode: 0o644 });
+  fs.renameSync(temporary, filePath);
+  fs.chmodSync(filePath, 0o644);
+}
+
+async function promptTunnelId() {
+  if (!process.stdin.isTTY) throw new Error("tunnel configure requires --tunnel-id outside an interactive terminal");
+  const terminal = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await new Promise((resolve) => terminal.question("Existing Secure MCP Tunnel ID: ", resolve));
+  } finally {
+    terminal.close();
+  }
+}
+
 function currentUid() { return typeof process.getuid === "function" ? process.getuid() : 1000; }
 function currentGid() { return typeof process.getgid === "function" ? process.getgid() : currentUid(); }
 
@@ -1155,6 +1218,11 @@ async function main() {
     console.log(JSON.stringify(installKeychainItem({ platform: process.platform }), null, 2));
     return;
   }
+  if (command === "tunnel" && subcommand === "configure") {
+    const tunnelId = args["tunnel-id"] || await promptTunnelId();
+    console.log(JSON.stringify(runtime.configureTunnel(tunnelId), null, 2));
+    return;
+  }
   if (command === "start") {
     console.log(JSON.stringify(await runtime.start({
       source: args.source,
@@ -1175,7 +1243,7 @@ async function main() {
   if (command === "workspace" && subcommand === "list") { console.log(JSON.stringify(runtime.workspaceList(), null, 2)); return; }
   if (command === "workspace" && subcommand === "destroy") { console.log(JSON.stringify(runtime.workspaceDestroy(args.session), null, 2)); return; }
   if (command === "supervise") { await runtime.supervise(args._[1] || runtime.stateFile); return; }
-  throw new Error("usage: s5-runtime.mjs {keychain install|start|status|doctor|stop|recover|rollback|workspace create|workspace list|workspace destroy|supervise}");
+  throw new Error("usage: s5-runtime.mjs {keychain install|tunnel configure|start|status|doctor|stop|recover|rollback|workspace create|workspace list|workspace destroy|supervise}");
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

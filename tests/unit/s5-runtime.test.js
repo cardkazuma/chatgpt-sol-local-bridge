@@ -82,14 +82,20 @@ test("status accepts a persisted macOS per-user temporary manager root", () => {
   assert.equal(reader.managerRoot, recordedManagerRoot);
 });
 
-test("the tunnel identifier is ephemeral tunnel-plane input, not profile state", () => {
+test("the tracked non-secret tunnel identifier is resolved without entering the profile state", () => {
   const runtime = new S5Runtime({
     runtimeRoot: path.join(base, "tunnel-id-runtime"),
+    repoRoot: path.join(base, "tunnel-id-repo"),
     managerRoot: path.join(os.tmpdir(), `chatgpt-local-bridge-s5-tunnel-id-${process.pid}`),
     platform: "darwin",
     securityBin: security,
     spawnSupervisor: false,
   });
+  runtime.configureTunnel("tunnel_s5_config_fixture");
+  assert.equal(runtime.resolveTunnelId(), "tunnel_s5_config_fixture");
+  const config = JSON.parse(fs.readFileSync(runtime.tunnelConfigFile, "utf8"));
+  assert.deepEqual(Object.keys(config).sort(), ["classification", "kind", "tunnelId", "version"]);
+  assert.equal(config.classification, "non-secret operational identifier");
   runtime.ensureRuntimeRoot();
   runtime.writeProfile();
   assert.doesNotMatch(fs.readFileSync(runtime.profileFile, "utf8"), /tunnel_id|CONTROL_PLANE_TUNNEL_ID/);
@@ -100,11 +106,32 @@ test("the tunnel identifier is ephemeral tunnel-plane input, not profile state",
     { tunnelName: "s5-test-0123456789ab-tunnel", privateNetworkName: "s5-test-0123456789ab-private" },
     { tunnelClientBin: "/tmp/tunnel-client" },
     "/tmp/tunnel.env",
-    "tunnel_s5_ephemeral_fixture",
+    runtime.resolveTunnelId(),
   );
   assert.equal(calls.length, 2);
-  assert(calls[0].includes("CONTROL_PLANE_TUNNEL_ID=tunnel_s5_ephemeral_fixture"));
-  assert.equal(fs.readFileSync(runtime.profileFile, "utf8").includes("tunnel_s5_ephemeral_fixture"), false);
+  assert(calls[0].includes("CONTROL_PLANE_TUNNEL_ID=tunnel_s5_config_fixture"));
+  assert.equal(fs.readFileSync(runtime.profileFile, "utf8").includes("tunnel_s5_config_fixture"), false);
+});
+
+test("tunnel configuration rejects credential-shaped additions", () => {
+  const repoRoot = path.join(base, "tunnel-invalid-config-repo");
+  const runtime = new S5Runtime({
+    runtimeRoot: path.join(base, "tunnel-invalid-config-runtime"),
+    repoRoot,
+    managerRoot: path.join(os.tmpdir(), `chatgpt-local-bridge-s5-tunnel-invalid-${process.pid}`),
+    platform: "darwin",
+    securityBin: security,
+    spawnSupervisor: false,
+  });
+  fs.mkdirSync(path.dirname(runtime.tunnelConfigFile), { recursive: true });
+  fs.writeFileSync(runtime.tunnelConfigFile, JSON.stringify({
+    kind: "s5-tunnel-configuration",
+    version: 1,
+    classification: "non-secret operational identifier",
+    tunnelId: "tunnel_s5_fixture",
+    apiKey: "must-not-be-here",
+  }));
+  assert.throws(() => runtime.resolveTunnelId(), /only the reviewed non-secret identifier fields/);
 });
 
 test("missing sidecar cache is restored only from the approved exact digest", () => {
