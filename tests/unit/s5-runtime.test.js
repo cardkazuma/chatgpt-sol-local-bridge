@@ -75,6 +75,40 @@ test("the tunnel identifier is ephemeral tunnel-plane input, not profile state",
   assert.equal(fs.readFileSync(runtime.profileFile, "utf8").includes("tunnel_s5_ephemeral_fixture"), false);
 });
 
+test("missing sidecar cache is restored only from the approved exact digest", () => {
+  const runtime = new S5Runtime({
+    runtimeRoot: path.join(base, "sidecar-runtime"),
+    managerRoot: path.join(os.tmpdir(), `chatgpt-local-bridge-s5-sidecar-${process.pid}`),
+    platform: "darwin",
+    securityBin: security,
+    spawnSupervisor: false,
+  });
+  const calls = [];
+  runtime.docker = {
+    imageAvailable: () => false,
+    checked: (args) => calls.push(args),
+    run: () => ({ status: 0, stdout: "node@sha256:745403dc46b5ab4c998502b07a12cbf020cf2c30645427a68ec0718f02d647de\n" }),
+  };
+  runtime.ensurePinnedSidecarImage();
+  assert.deepEqual(calls, [["pull", "node:22.14.0-bookworm-slim@sha256:745403dc46b5ab4c998502b07a12cbf020cf2c30645427a68ec0718f02d647de"]]);
+});
+
+test("sidecar cache recovery rejects a non-matching digest", () => {
+  const runtime = new S5Runtime({
+    runtimeRoot: path.join(base, "wrong-sidecar-runtime"),
+    managerRoot: path.join(os.tmpdir(), `chatgpt-local-bridge-s5-wrong-sidecar-${process.pid}`),
+    platform: "darwin",
+    securityBin: security,
+    spawnSupervisor: false,
+  });
+  runtime.docker = {
+    imageAvailable: () => true,
+    checked: () => { throw new Error("unexpected pull"); },
+    run: () => ({ status: 0, stdout: "node@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n" }),
+  };
+  assert.throws(() => runtime.ensurePinnedSidecarImage(), /pinned sidecar image digest verification failed/);
+});
+
 test("pending waitFor keeps a process alive until its predicate succeeds", async () => {
   const runtimeModule = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../scripts/s5-runtime.mjs");
   const started = Date.now();

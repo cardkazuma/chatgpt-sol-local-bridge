@@ -396,7 +396,7 @@ export class S5Runtime {
     const provenance = readJson(tunnelProvenance);
     if (!provenance || typeof provenance !== "object" || Array.isArray(provenance)) throw new Error("tunnel-client provenance bundle is invalid");
     if (!this.docker.probeDocker()) throw new Error("Docker daemon is unavailable");
-    if (!this.docker.imageAvailable(SIDECAR_IMAGE)) throw new Error("pinned sidecar image is not locally available");
+    this.ensurePinnedSidecarImage();
     const help = this.docker.run([
       "run", "--rm", "--platform", "linux/amd64", "--user", "10001:10001", "--read-only", "--cap-drop", "ALL",
       "--security-opt", "no-new-privileges:true", "--network", "none", "--mount", `type=bind,src=${tunnelClientBin},dst=/opt/tunnel-client,readonly`,
@@ -428,6 +428,16 @@ export class S5Runtime {
     state.bridgeImageId = image.stdout.trim();
     this.writeState(state);
     this.docker.checked([...composeArgs(this.repoRoot, this.overrideFile, resources), "run", "-d", "--no-deps", "--name", resources.bridgeName, "bridge"], { env: composeEnv });
+  }
+
+  ensurePinnedSidecarImage() {
+    if (!this.docker.imageAvailable(SIDECAR_IMAGE)) this.docker.checked(["pull", SIDECAR_IMAGE]);
+    const inspection = this.docker.run(["image", "inspect", "--format", "{{range .RepoDigests}}{{println .}}{{end}}", SIDECAR_IMAGE]);
+    const expectedDigest = SIDECAR_IMAGE.slice(SIDECAR_IMAGE.indexOf("@") + 1);
+    const found = String(inspection.stdout || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (inspection.status !== 0 || !found.some((entry) => entry.endsWith(`@${expectedDigest}`))) {
+      throw new Error("pinned sidecar image digest verification failed");
+    }
   }
 
   startRelay(resources) {
