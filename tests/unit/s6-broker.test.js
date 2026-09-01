@@ -459,11 +459,13 @@ function prepareSource() {
   writeSource("README.md", "S6 baseline\n");
   writeSource("package.json", "{\"name\":\"s6-fixture\",\"private\":true}\n");
   writeSource("paperless/secrets/decrypt-passwords.txt.example", "change-me\n");
+  writeSource("scripts/executable.sh", "#!/bin/sh\nexit 0\n");
+  fs.chmodSync(path.join(source, "scripts", "executable.sh"), 0o700);
   runGit(["init", "-q", "-b", "main"], source);
   runGit(["config", "core.hooksPath", "/dev/null"], source);
   runGit(["config", "user.name", "S6 Source"], source);
   runGit(["config", "user.email", "s6-source@example.invalid"], source);
-  runGit(["add", "--", ".gitignore", "README.md", "package.json", "paperless/secrets/decrypt-passwords.txt.example"], source);
+  runGit(["add", "--", ".gitignore", "README.md", "package.json", "paperless/secrets/decrypt-passwords.txt.example", "scripts/executable.sh"], source);
   runGit(["commit", "-qm", "S6 source baseline"], source);
 }
 

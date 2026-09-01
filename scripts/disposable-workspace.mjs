@@ -478,7 +478,11 @@ function restrictTree(target) {
   for (const entry of fs.readdirSync(target, { withFileTypes: true })) {
     const full = path.join(target, entry.name);
     if (entry.isDirectory()) restrictTree(full);
-    else if (entry.isFile()) fs.chmodSync(full, full.endsWith(".githooks/pre-commit") || full.endsWith("scripts/pre-commit-policy.mjs") ? 0o555 : 0o600);
+    else if (entry.isFile()) {
+      const reviewedGovernance = full.endsWith(".githooks/pre-commit") || full.endsWith("scripts/pre-commit-policy.mjs");
+      const executable = (fs.lstatSync(full).mode & 0o111) !== 0;
+      fs.chmodSync(full, reviewedGovernance ? 0o555 : executable ? 0o700 : 0o600);
+    }
     else throw new Error(`workspace contains unsupported filesystem entry: ${full}`);
   }
 }
