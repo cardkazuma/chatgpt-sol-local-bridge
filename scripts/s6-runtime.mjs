@@ -204,7 +204,7 @@ export class S6Runtime extends S5Runtime {
       ["/workspace/repo/.git/config", path.join(this.activeSession.workspacePath, ".git", "config"), false],
       ["/bridge-governance/hooks", path.join(governanceRoot, "hooks"), false],
       ["/bridge-governance/pre-commit-policy.mjs", path.join(governanceRoot, "pre-commit-policy.mjs"), false],
-      ["/bridge-broker/publish.sock", this.brokerSocketPath, false],
+      ["/bridge-broker/publish.sock", this.brokerSocketPath, true],
     ];
     for (const [destination, source, writable] of expectedMounts) {
       const mount = mounts.find((item) => item.Destination === destination);
@@ -226,7 +226,7 @@ export class S6Runtime extends S5Runtime {
       "      S6_BROKER_SOCKET: /bridge-broker/publish.sock",
       "    logging:", "      driver: local", "      options:", "        max-size: 1m", "        max-file: \"3\"", "    volumes:",
       "      - type: volume", "        source: s5_transport", "        target: /transport", "        read_only: false",
-      "      - type: bind", "        source: ${S6_BROKER_SOCKET_SOURCE:?S6 broker socket is required}", "        target: /bridge-broker/publish.sock", "        read_only: true", "volumes:",
+      "      - type: bind", "        source: ${S6_BROKER_SOCKET_SOURCE:?S6 broker socket is required}", "        target: /bridge-broker/publish.sock", "        read_only: false", "volumes:",
       "  s5_transport:", "    name: ${S5_TRANSPORT_VOLUME:?set S5_TRANSPORT_VOLUME to a unique runtime volume}", "",
     ].join("\n");
     writePrivateFile(this.overrideFile, content);
