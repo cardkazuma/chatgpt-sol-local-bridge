@@ -51,8 +51,8 @@ test("S6 host broker readiness is local and its socket is cleaned up", async () 
   await runtime.startBroker(session);
   try {
     assert.equal(fs.lstatSync(runtime.brokerSocketPath).isSocket(), true);
-    assert.equal(path.basename(runtime.brokerSocketPath), "p");
-    assert.match(runtime.brokerSocketPath, /b[0-9a-f]{12}\/p$/);
+    assert.equal(path.basename(runtime.brokerSocketPath), "publish.sock");
+    assert.match(runtime.brokerSocketPath, /b[0-9a-f]{10}\/publish\.sock$/);
     assert.equal(fs.lstatSync(path.dirname(runtime.brokerSocketPath)).mode & 0o777, 0o711);
     assert.equal(runtime.brokerProcess?.exitCode, null);
   } finally {

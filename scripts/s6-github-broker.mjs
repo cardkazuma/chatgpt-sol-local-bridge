@@ -60,7 +60,7 @@ export function s6BrokerSocketPath(managerRoot, sessionId) {
   // Mount a session-unique, socket-only channel directory into the non-root
   // bridge container. The short hashed component stays within macOS sockaddr
   // limits; the broker capability and fixed protocol remain the authority.
-  return path.join(path.resolve(managerRoot), `b${suffix.slice(0, 12)}`, "p");
+  return path.join(path.resolve(managerRoot), `b${suffix.slice(0, 10)}`, "publish.sock");
 }
 
 export class S6GitHubBroker {

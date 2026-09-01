@@ -214,7 +214,7 @@ export class S6Runtime extends S5Runtime {
     }
     const env = value.Config?.Env || [];
     if (env.some((entry) => /^(?:S6_GITHUB_TOKEN_FILE|S6_BROKER_CAPABILITY|GITHUB_|GH_|GITLAB_|BITBUCKET_|SSH_|GIT_(?:ASKPASS|SSH|CONFIG_))/.test(entry))) throw new Error("GitHub credential, SSH material, or broker capability entered the S6 bridge container");
-    if (!env.some((entry) => entry === "S6_BROKER_SOCKET=/bridge-broker/p")) throw new Error("S6 broker channel was not fixed");
+    if (!env.some((entry) => entry === "S6_BROKER_SOCKET=/bridge-broker/publish.sock")) throw new Error("S6 broker channel was not fixed");
     if (!env.includes(`BRIDGE_GOVERNANCE_MODE=s6`) || !env.includes(`BRIDGE_REVIEWED_HOOKS_PATH=${S6_GOVERNANCE_HOOKS_PATH}`) || !env.includes(`BRIDGE_REVIEWED_POLICY_PATH=${S6_GOVERNANCE_POLICY_PATH}`)) throw new Error("S6 external governance environment changed");
   }
 
@@ -223,7 +223,7 @@ export class S6Runtime extends S5Runtime {
       "services:", "  bridge:", "    image: ${S5_IMAGE_TAG:?set S5_IMAGE_TAG to a unique runtime tag}",
       "    environment:", "      MCP_UNIX_SOCKET_PATH: /transport/mcp.sock", `      ENABLED_TOOLS: ${S6_EXPECTED_TOOLS.join(",")}`,
       "      BRIDGE_GOVERNANCE_MODE: s6", `      BRIDGE_REVIEWED_HOOK_PATH: ${S6_GOVERNANCE_HOOKS_PATH}/pre-commit`, `      BRIDGE_REVIEWED_HOOKS_PATH: ${S6_GOVERNANCE_HOOKS_PATH}`, `      BRIDGE_REVIEWED_POLICY_PATH: ${S6_GOVERNANCE_POLICY_PATH}`,
-      "      S6_BROKER_SOCKET: /bridge-broker/p",
+      "      S6_BROKER_SOCKET: /bridge-broker/publish.sock",
       "    logging:", "      driver: local", "      options:", "        max-size: 1m", "        max-file: \"3\"", "    volumes:",
       "      - type: volume", "        source: s5_transport", "        target: /transport", "        read_only: false",
       "      - type: bind", "        source: ${S6_BROKER_SOCKET_SOURCE:?S6 broker socket is required}", "        target: /bridge-broker", "        read_only: false", "volumes:",
