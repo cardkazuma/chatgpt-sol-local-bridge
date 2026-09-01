@@ -20,6 +20,7 @@ export class DisposableWorkspaceManager {
     branchPrefix = `bridge/${sessionPrefix}`,
     remoteName = "source",
     materializer = null,
+    allowedTrackedPaths = [],
     allowHomeRoot = false,
     readOnly = false,
   } = {}) {
@@ -30,6 +31,9 @@ export class DisposableWorkspaceManager {
     if (!/^bridge\/[a-z][a-z0-9-]*$/.test(branchPrefix)) throw new Error("disposable branch prefix is invalid");
     if (!/^[a-z][a-z0-9-]*$/.test(remoteName)) throw new Error("disposable remote name is invalid");
     if (materializer != null && typeof materializer !== "function") throw new Error("disposable source materializer must be a function");
+    if (!Array.isArray(allowedTrackedPaths) || allowedTrackedPaths.some((item) => typeof item !== "string" || !item || path.isAbsolute(item) || item.includes("..") || item.includes("\\") || item.includes("\0"))) {
+      throw new Error("disposable allowed tracked paths are invalid");
+    }
     this.root = path.resolve(root);
     this.source = source ? validateSource(source, protectedPaths) : null;
     this.governance = { ...governance, managerRoot: this.root };
@@ -40,6 +44,7 @@ export class DisposableWorkspaceManager {
     this.branchPrefix = branchPrefix;
     this.remoteName = remoteName;
     this.materializer = materializer;
+    this.allowedTrackedPaths = new Set(allowedTrackedPaths);
     this.readOnly = readOnly;
     this.sessionIdPattern = new RegExp(`^${escapeRegExp(sessionPrefix)}-[a-z0-9]+-[0-9a-f]{16}$`);
     this.sessionsRoot = path.join(this.root, "sessions");
@@ -237,7 +242,7 @@ export class DisposableWorkspaceManager {
       git(["clone", "--no-local", "--no-hardlinks", "--origin", this.remoteName, this.source, workspacePath], this.root, this.gitEnv());
     }
     try {
-      validateWorkspaceContents(workspacePath, this.gitEnv());
+      validateWorkspaceContents(workspacePath, this.gitEnv(), this.allowedTrackedPaths);
       const governance = this.installGovernance(workspacePath, sessionId);
       preparation = { ...preparation, ...governance };
       if (this.gitIdentity) {
@@ -389,10 +394,10 @@ function assertSafeManagerRoot(root, protectedPaths, { allowHomeRoot = false } =
   assertNoSymlinkAncestors(resolved);
 }
 
-function validateWorkspaceContents(workspacePath, env) {
+function validateWorkspaceContents(workspacePath, env, allowedTrackedPaths = new Set()) {
   const tracked = git(["ls-files", "-z"], workspacePath, env).split("\0").filter(Boolean);
   for (const relative of tracked) {
-    if (!classifyPolicyPath(relative).allowed) {
+    if (!classifyPolicyPath(relative).allowed && !allowedTrackedPaths.has(relative)) {
       throw new Error(`source contains forbidden tracked path: ${relative}`);
     }
   }

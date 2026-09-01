@@ -26,6 +26,7 @@ export const S6_REMOTE_REF_PREFIX = "refs/heads/bridge/s6/";
 export const S6_GOVERNANCE_HOOKS_PATH = "/bridge-governance/hooks";
 export const S6_GOVERNANCE_POLICY_PATH = "/bridge-governance/pre-commit-policy.mjs";
 export const S6_STANDARD_FETCH_REFSPEC = "+refs/heads/*:refs/remotes/origin/*";
+export const S6_CANONICAL_PLACEHOLDER_PATHS = Object.freeze(["paperless/secrets/decrypt-passwords.txt.example"]);
 const SHA = /^[0-9a-f]{40}$/;
 const SESSION = /^s6-[a-z0-9]+-[0-9a-f]{16}$/;
 const BRANCH = /^bridge\/s6\/s6-[a-z0-9]+-[0-9a-f]{16}$/;
@@ -320,7 +321,7 @@ export class S6GitHubBroker {
         continue;
       }
       const decision = classifyPolicyPath(normalized);
-      if (!decision.allowed) throw new Error(`${decision.reason}: ${normalized}`);
+      if (!decision.allowed && !S6_CANONICAL_PLACEHOLDER_PATHS.includes(normalized)) throw new Error(`${decision.reason}: ${normalized}`);
       const absolute = path.join(workspacePath, normalized);
       if (fs.existsSync(absolute) && fs.lstatSync(absolute).isSymbolicLink()) throw new Error(`S6 refuses working-tree symlink: ${normalized}`);
     }

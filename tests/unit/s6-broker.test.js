@@ -18,6 +18,7 @@ import {
   S6_REPOSITORY_URL,
   S6_GOVERNANCE_HOOKS_PATH,
   S6_GOVERNANCE_POLICY_PATH,
+  S6_CANONICAL_PLACEHOLDER_PATHS,
   assertS6RepositoryAlias,
   assertS6Source,
   s6BranchForSession,
@@ -75,6 +76,7 @@ test("S6 reuses the reviewed policy and fails closed on sensitive and governance
     assert.equal(classifyPolicyPath(name).allowed, false, name);
     assert.equal(classifyPublishPath(name).allowed, false, name);
   }
+  assert.equal(classifyPublishPath("paperless/secrets/decrypt-passwords.txt.example").allowed, false, "the canonical base placeholder must remain unpublishable");
   for (const name of [".github/workflows/release.yml", ".githooks/pre-commit", "scripts/pre-commit-policy.mjs", ".gitmodules"]) {
     assert.equal(isHighRiskGovernancePath(name), true, name);
     assert.equal(classifyPublishPath(name).allowed, false, name);
@@ -230,6 +232,7 @@ test("S6 broker independently validates a clean linear graph and rejects bypasse
     source: S6_REPOSITORY_URL,
     remoteName: "origin",
     materializer: (context) => makeBroker(context.sessionId).materializeWorkspace(context),
+    allowedTrackedPaths: S6_CANONICAL_PLACEHOLDER_PATHS,
     governance: {
       external: true,
       hookFile: path.join(repo, "scripts", "s6-pre-commit"),
@@ -455,11 +458,12 @@ function prepareSource() {
   writeSource(".gitignore", "runtime/\n*.log\n.env\nignored.txt\n");
   writeSource("README.md", "S6 baseline\n");
   writeSource("package.json", "{\"name\":\"s6-fixture\",\"private\":true}\n");
+  writeSource("paperless/secrets/decrypt-passwords.txt.example", "change-me\n");
   runGit(["init", "-q", "-b", "main"], source);
   runGit(["config", "core.hooksPath", "/dev/null"], source);
   runGit(["config", "user.name", "S6 Source"], source);
   runGit(["config", "user.email", "s6-source@example.invalid"], source);
-  runGit(["add", "--", ".gitignore", "README.md", "package.json"], source);
+  runGit(["add", "--", ".gitignore", "README.md", "package.json", "paperless/secrets/decrypt-passwords.txt.example"], source);
   runGit(["commit", "-qm", "S6 source baseline"], source);
 }
 

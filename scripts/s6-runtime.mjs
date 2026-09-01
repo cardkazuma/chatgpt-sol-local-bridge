@@ -11,6 +11,7 @@ import {
   S6_REPOSITORY_URL,
   S6_GOVERNANCE_HOOKS_PATH,
   S6_GOVERNANCE_POLICY_PATH,
+  S6_CANONICAL_PLACEHOLDER_PATHS,
   s6BrokerSocketPath,
   parseBrokerReady,
 } from "./s6-github-broker.mjs";
@@ -86,6 +87,7 @@ export class S6Runtime extends S5Runtime {
       source: S6_REPOSITORY_URL,
       remoteName: "origin",
       materializer: (context) => this.createBroker(context.sessionId).materializeWorkspace(context),
+      allowedTrackedPaths: S6_CANONICAL_PLACEHOLDER_PATHS,
       governance: {
         external: true,
         hookFile: path.join(this.repoRoot, "scripts", "s6-pre-commit"),
