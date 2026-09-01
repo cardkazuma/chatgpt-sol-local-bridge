@@ -34,7 +34,7 @@ export function s6BrokerPublishBranch() {
 
 function requestBroker(request, { registration = false } = {}) {
   const socketPath = String(process.env.S6_BROKER_SOCKET || "");
-  if (socketPath !== "/bridge-broker/publish.sock") throw new Error("S6 broker channel identity is invalid");
+  if (socketPath !== "/transport/s6-broker.sock") throw new Error("S6 broker channel identity is invalid");
   if (!registration && !brokerRegistered) throw new Error("S6 broker attestation channel is not registered");
   const capability = registration ? String(request.capability || "") : BROKER_CAPABILITY;
   if (!CAPABILITY.test(capability)) throw new Error("S6 broker capability is invalid");

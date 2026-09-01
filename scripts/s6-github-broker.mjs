@@ -550,29 +550,12 @@ export class S6BrokerServer {
       const line = buffer.slice(0, buffer.indexOf("\n"));
       try {
         const request = JSON.parse(line);
-        if (!request || typeof request !== "object" || Array.isArray(request)) throw new Error("invalid broker request");
         // A connection carries exactly one request. Mark it consumed before
         // any async publish work so a peer cannot pipeline a second request
         // while the first one is holding the credential scope.
         done = true;
-        if (request.operation === "register") {
-          if (this.capability || Object.keys(request).sort().join(",") !== "capability,operation" || !/^[a-f0-9]{64}$/.test(String(request.capability || ""))) throw new Error("S6 broker registration is closed");
-          this.capability = request.capability;
-          socket.end(`${JSON.stringify({ registered: true })}\n`);
-        } else {
-          if (!this.capability || !sameCapability(request.capability, this.capability)) throw new Error("broker authentication failed");
-          if (request.operation === "attest") {
-          if (Object.keys(request).sort().join(",") !== "capability,operation,sha") throw new Error("invalid attest request");
-          const result = this.broker.attestCommit(request.sha);
-          socket.end(`${JSON.stringify(result)}\n`);
-          } else if (request.operation === "publish") {
-          if (Object.keys(request).sort().join(",") !== "capability,operation") throw new Error("publish accepts no authority-bearing input");
-          const result = await this.broker.publishBranch();
-          socket.end(`${JSON.stringify(result)}\n`);
-          } else {
-            throw new Error("unsupported S6 broker operation");
-          }
-        }
+        const result = await dispatchS6BrokerRequest(this.broker, this, request);
+        socket.end(`${JSON.stringify(result)}\n`);
       } catch (error) {
         socket.end(`${JSON.stringify({ error: sanitizeGitError(error.message) })}\n`);
       }
@@ -589,6 +572,26 @@ export class S6BrokerServer {
       });
     });
   }
+}
+
+export async function dispatchS6BrokerRequest(broker, authState, request) {
+  if (!(broker instanceof S6GitHubBroker) || !authState || typeof authState !== "object") throw new Error("invalid broker dispatcher state");
+  if (!request || typeof request !== "object" || Array.isArray(request)) throw new Error("invalid broker request");
+  if (request.operation === "register") {
+    if (authState.capability || Object.keys(request).sort().join(",") !== "capability,operation" || !/^[a-f0-9]{64}$/.test(String(request.capability || ""))) throw new Error("S6 broker registration is closed");
+    authState.capability = request.capability;
+    return { registered: true };
+  }
+  if (!authState.capability || !sameCapability(request.capability, authState.capability)) throw new Error("broker authentication failed");
+  if (request.operation === "attest") {
+    if (Object.keys(request).sort().join(",") !== "capability,operation,sha") throw new Error("invalid attest request");
+    return broker.attestCommit(request.sha);
+  }
+  if (request.operation === "publish") {
+    if (Object.keys(request).sort().join(",") !== "capability,operation") throw new Error("publish accepts no authority-bearing input");
+    return broker.publishBranch();
+  }
+  throw new Error("unsupported S6 broker operation");
 }
 
 export function parseBrokerReady(line) {

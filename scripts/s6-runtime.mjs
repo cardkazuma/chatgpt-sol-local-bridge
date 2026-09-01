@@ -12,17 +12,16 @@ import {
   S6_GOVERNANCE_HOOKS_PATH,
   S6_GOVERNANCE_POLICY_PATH,
   S6_CANONICAL_PLACEHOLDER_PATHS,
-  s6BrokerSocketPath,
   parseBrokerReady,
 } from "./s6-github-broker.mjs";
 import { s6CredentialProbe } from "./s6-credential.mjs";
-import { S5Runtime, EXPECTED_TOOLS as S5_EXPECTED_TOOLS, DISABLED_TOOLS, readCatalogFromFile } from "./s5-runtime.mjs";
+import { S5Runtime, EXPECTED_TOOLS as S5_EXPECTED_TOOLS, DISABLED_TOOLS, SIDECAR_IMAGE, readCatalogFromFile } from "./s5-runtime.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const APP_SUPPORT_ROOT = path.join(os.homedir(), "Library", "Application Support", "ChatGPT Local Bridge");
 const DEFAULT_RUNTIME_ROOT = path.join(APP_SUPPORT_ROOT, "s6-runtime");
 const DEFAULT_MANAGER_ROOT = path.join(os.tmpdir(), `chatgpt-local-bridge-s6-${typeof process.getuid === "function" ? process.getuid() : "user"}`);
-const BROKER_SCRIPT = path.join(REPO_ROOT, "scripts", "s6-github-broker.mjs");
+const BROKER_PROXY_HOST_SCRIPT = path.join(REPO_ROOT, "scripts", "s6-broker-proxy-host.mjs");
 const S6_EXPECTED_TOOLS = Object.freeze([
   ...S5_EXPECTED_TOOLS.slice(0, S5_EXPECTED_TOOLS.indexOf("project_test")),
   "git_publish_branch",
@@ -39,7 +38,6 @@ export class S6Runtime extends S5Runtime {
   } = {}) {
     super({ ...options, runtimeRoot, managerRoot });
     this.brokerProcess = null;
-    this.brokerSocketPath = "";
     this.activeSession = null;
   }
 
@@ -59,6 +57,11 @@ export class S6Runtime extends S5Runtime {
       noCodexRun: true,
       noNasOrDockerAuthorityInBridge: true,
     };
+  }
+
+  makeResources() {
+    const resources = super.makeResources();
+    return { ...resources, brokerProxyName: `${resources.projectName}-broker-proxy` };
   }
 
   async start(options = {}) {
@@ -126,7 +129,15 @@ export class S6Runtime extends S5Runtime {
 
   async createDockerResources(state, session) {
     this.activeSession = session;
-    await this.startBroker(session.sessionId);
+    const { resources } = state;
+    this.docker.checked(["volume", "create", "--name", resources.volumeName]);
+    this.docker.checked([
+      "run", "--rm", "--platform", "linux/amd64", "--user", "0:0", "--read-only", "--cap-drop", "ALL",
+      "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--security-opt", "no-new-privileges:true", "--network", "none",
+      "--mount", `type=volume,src=${resources.volumeName},dst=/transport`, "--entrypoint", "/bin/sh", SIDECAR_IMAGE,
+      "-c", "chown 10001:10001 /transport && chmod 0700 /transport",
+    ]);
+    await this.startBroker(session.sessionId, resources);
     try {
       await super.createDockerResources(state, session);
     } catch (error) {
@@ -135,10 +146,10 @@ export class S6Runtime extends S5Runtime {
     }
   }
 
-  async startBroker(sessionId) {
+  async startBroker(sessionId, resources) {
     if (this.brokerProcess) throw new Error("S6 broker is already running");
-    const socketPath = s6BrokerSocketPath(this.managerRoot, sessionId);
-    const child = spawn(process.execPath, [BROKER_SCRIPT, "serve", "--manager-root", this.managerRoot, "--session", sessionId], {
+    if (!resources?.volumeName || !resources?.brokerProxyName) throw new Error("S6 broker proxy resources are missing");
+    const child = spawn(process.execPath, [BROKER_PROXY_HOST_SCRIPT, "--manager-root", this.managerRoot, "--session", sessionId, "--volume", resources.volumeName, "--proxy-name", resources.brokerProxyName], {
       cwd: this.repoRoot,
       env: brokerHostEnvironment(this.managerRoot),
       stdio: ["ignore", "pipe", "pipe"],
@@ -152,7 +163,6 @@ export class S6Runtime extends S5Runtime {
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
     this.brokerProcess = child;
-    this.brokerSocketPath = socketPath;
     try {
       await new Promise((resolve, reject) => {
         const deadline = setTimeout(() => reject(new Error("timed out waiting for S6 GitHub broker")), 10_000);
@@ -170,7 +180,7 @@ export class S6Runtime extends S5Runtime {
         });
         check();
       });
-      await this.waitFor(() => fs.existsSync(socketPath), "S6 GitHub broker socket", 10_000);
+      await this.waitFor(() => this.containerRunning(resources.brokerProxyName), "S6 broker proxy container", 10_000);
     } catch (error) {
       await this.stopBroker();
       const detail = stderr.trim().replace(/\s+/g, " ").slice(0, 240);
@@ -180,9 +190,7 @@ export class S6Runtime extends S5Runtime {
 
   async stopBroker() {
     const child = this.brokerProcess;
-    const socketPath = this.brokerSocketPath;
     this.brokerProcess = null;
-    this.brokerSocketPath = "";
     if (child && child.exitCode == null && !child.killed) {
       await new Promise((resolve) => {
         const timer = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} resolve(); }, 2_000);
@@ -190,13 +198,12 @@ export class S6Runtime extends S5Runtime {
         try { child.kill("SIGTERM"); } catch { clearTimeout(timer); resolve(); }
       });
     }
-    if (socketPath) fs.rmSync(socketPath, { force: true });
   }
 
-  expectedBridgeBindCount() { return 5; }
+  expectedBridgeBindCount() { return 4; }
 
-  assertBridgeExtraBoundary(value, _resources) {
-    if (!this.activeSession || !this.brokerSocketPath) throw new Error("S6 active session broker state is missing");
+  assertBridgeExtraBoundary(value, resources) {
+    if (!this.activeSession) throw new Error("S6 active session broker state is missing");
     const mounts = value.Mounts || [];
     const governanceRoot = path.resolve(this.activeSession.governanceHostRoot || "");
     const expectedMounts = [
@@ -204,7 +211,6 @@ export class S6Runtime extends S5Runtime {
       ["/workspace/repo/.git/config", path.join(this.activeSession.workspacePath, ".git", "config"), false],
       ["/bridge-governance/hooks", path.join(governanceRoot, "hooks"), false],
       ["/bridge-governance/pre-commit-policy.mjs", path.join(governanceRoot, "pre-commit-policy.mjs"), false],
-      ["/bridge-broker", path.dirname(this.brokerSocketPath), true],
     ];
     for (const [destination, source, writable] of expectedMounts) {
       const mount = mounts.find((item) => item.Destination === destination);
@@ -214,8 +220,9 @@ export class S6Runtime extends S5Runtime {
     }
     const env = value.Config?.Env || [];
     if (env.some((entry) => /^(?:S6_GITHUB_TOKEN_FILE|S6_BROKER_CAPABILITY|GITHUB_|GH_|GITLAB_|BITBUCKET_|SSH_|GIT_(?:ASKPASS|SSH|CONFIG_))/.test(entry))) throw new Error("GitHub credential, SSH material, or broker capability entered the S6 bridge container");
-    if (!env.some((entry) => entry === "S6_BROKER_SOCKET=/bridge-broker/publish.sock")) throw new Error("S6 broker channel was not fixed");
+    if (!env.some((entry) => entry === "S6_BROKER_SOCKET=/transport/s6-broker.sock")) throw new Error("S6 broker channel was not fixed");
     if (!env.includes(`BRIDGE_GOVERNANCE_MODE=s6`) || !env.includes(`BRIDGE_REVIEWED_HOOKS_PATH=${S6_GOVERNANCE_HOOKS_PATH}`) || !env.includes(`BRIDGE_REVIEWED_POLICY_PATH=${S6_GOVERNANCE_POLICY_PATH}`)) throw new Error("S6 external governance environment changed");
+    this.assertBrokerProxyBoundary(resources);
   }
 
   writeComposeOverride() {
@@ -223,17 +230,15 @@ export class S6Runtime extends S5Runtime {
       "services:", "  bridge:", "    image: ${S5_IMAGE_TAG:?set S5_IMAGE_TAG to a unique runtime tag}",
       "    environment:", "      MCP_UNIX_SOCKET_PATH: /transport/mcp.sock", `      ENABLED_TOOLS: ${S6_EXPECTED_TOOLS.join(",")}`,
       "      BRIDGE_GOVERNANCE_MODE: s6", `      BRIDGE_REVIEWED_HOOK_PATH: ${S6_GOVERNANCE_HOOKS_PATH}/pre-commit`, `      BRIDGE_REVIEWED_HOOKS_PATH: ${S6_GOVERNANCE_HOOKS_PATH}`, `      BRIDGE_REVIEWED_POLICY_PATH: ${S6_GOVERNANCE_POLICY_PATH}`,
-      "      S6_BROKER_SOCKET: /bridge-broker/publish.sock",
+      "      S6_BROKER_SOCKET: /transport/s6-broker.sock",
       "    logging:", "      driver: local", "      options:", "        max-size: 1m", "        max-file: \"3\"", "    volumes:",
       "      - type: volume", "        source: s5_transport", "        target: /transport", "        read_only: false",
-      "      - type: bind", "        source: ${S6_BROKER_SOCKET_SOURCE:?S6 broker socket is required}", "        target: /bridge-broker", "        read_only: false", "volumes:",
-      "  s5_transport:", "    name: ${S5_TRANSPORT_VOLUME:?set S5_TRANSPORT_VOLUME to a unique runtime volume}", "",
+      "volumes:", "  s5_transport:", "    name: ${S5_TRANSPORT_VOLUME:?set S5_TRANSPORT_VOLUME to a unique runtime volume}", "",
     ].join("\n");
     writePrivateFile(this.overrideFile, content);
   }
 
   composeEnvironment(session, resources) {
-    if (!this.brokerSocketPath) throw new Error("S6 broker must be ready before Compose resources");
     const governanceRoot = path.resolve(session.governanceHostRoot || "");
     if (!governanceRoot || !isWithin(governanceRoot, path.join(this.managerRoot, "governance"))) throw new Error("S6 governance source is not manager-owned");
     return {
@@ -246,17 +251,31 @@ export class S6Runtime extends S5Runtime {
       BRIDGE_POLICY_TARGET: S6_GOVERNANCE_POLICY_PATH,
       S5_IMAGE_TAG: resources.imageTag,
       S5_TRANSPORT_VOLUME: resources.volumeName,
-      S6_BROKER_SOCKET_SOURCE: path.dirname(this.brokerSocketPath),
     };
   }
 
   async cleanupRuntime(resources, options = {}) {
     try {
+      if (resources?.brokerProxyName) {
+        this.docker.run(["stop", "-t", "2", resources.brokerProxyName]);
+        this.docker.run(["rm", "-f", resources.brokerProxyName]);
+      }
       await this.stopBroker();
       await super.cleanupRuntime(resources, options);
     } finally {
       this.activeSession = null;
     }
+  }
+
+  assertBrokerProxyBoundary(resources) {
+    const value = this.docker.inspect(resources.brokerProxyName);
+    if (value.Config?.User !== "10001:10001" || value.HostConfig?.ReadonlyRootfs !== true || value.HostConfig?.NetworkMode !== "none") throw new Error("S6 broker proxy isolation changed");
+    if (!(value.HostConfig?.CapDrop || []).includes("ALL") || !(value.HostConfig?.SecurityOpt || []).includes("no-new-privileges:true")) throw new Error("S6 broker proxy hardening changed");
+    const mounts = value.Mounts || [];
+    if (mounts.length !== 2 || !mounts.some((item) => item.Type === "volume" && item.Name === resources.volumeName && item.Destination === "/transport" && item.RW === true)) throw new Error("S6 broker proxy transport mount changed");
+    if (mounts.some((item) => item.Source.includes("sessions") || item.Source.includes("credential-helper") || item.Source.includes(".config/gh"))) throw new Error("S6 broker proxy received forbidden manager or credential material");
+    const env = value.Config?.Env || [];
+    if (env.some((entry) => /^(?:GH_|GITHUB_|SSH_|GIT_)/.test(entry))) throw new Error("S6 broker proxy received credential environment");
   }
 
   readCatalogForCheck() {
