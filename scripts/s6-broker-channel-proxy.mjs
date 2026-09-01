@@ -4,7 +4,9 @@ import fs from "node:fs";
 import net from "node:net";
 import readline from "node:readline";
 
-const socketPath = "/transport/s6-broker.sock";
+const socketArgument = process.argv[1] && process.argv[2] === "--socket" ? process.argv[3] : "";
+const socketPath = socketArgument || "/transport/s6-broker.sock";
+if (!pathIsAbsolute(socketPath)) throw new Error("S6 proxy socket path is invalid");
 const pending = new Map();
 let nextId = 1;
 
@@ -24,7 +26,7 @@ input.on("line", (line) => {
   socket.end(`${JSON.stringify(envelope.response)}\n`);
 });
 
-const server = net.createServer((socket) => {
+const server = net.createServer({ allowHalfOpen: true }, (socket) => {
   let buffer = "";
   let sent = false;
   socket.setEncoding("utf8");
@@ -59,3 +61,5 @@ const close = () => {
 };
 process.on("SIGTERM", close);
 process.on("SIGINT", close);
+
+function pathIsAbsolute(value) { return typeof value === "string" && value.startsWith("/") && !value.includes("\0"); }
