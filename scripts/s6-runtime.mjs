@@ -214,7 +214,7 @@ export class S6Runtime extends S5Runtime {
     ];
     for (const [destination, source, writable] of expectedMounts) {
       const mount = mounts.find((item) => item.Destination === destination);
-      if (!mount || mount.Type !== "bind" || mount.RW !== writable || path.resolve(mount.Source) !== path.resolve(source)) {
+      if (!mount || mount.Type !== "bind" || mount.RW !== writable || !dockerDesktopMountSourceMatches(mount.Source, source, this.platform)) {
         throw new Error(`S6 fixed mount changed: ${destination}`);
       }
     }
@@ -366,6 +366,20 @@ function brokerHostEnvironment(managerRoot) {
     LANG: "C",
     LC_ALL: "C",
   };
+}
+
+export function dockerDesktopMountSourceMatches(reported, expected, platform = process.platform) {
+  const reportedPath = path.resolve(String(reported || ""));
+  const expectedPath = path.resolve(String(expected || ""));
+  if (reportedPath === expectedPath) return true;
+  if (platform !== "darwin" || !reportedPath.startsWith("/host_mnt/")) return false;
+  return normalizeDarwinHostPath(reportedPath.slice("/host_mnt".length)) === normalizeDarwinHostPath(expectedPath);
+}
+
+function normalizeDarwinHostPath(value) {
+  if (value === "/tmp" || value.startsWith("/tmp/")) return `/private${value}`;
+  if (value === "/var" || value.startsWith("/var/")) return `/private${value}`;
+  return value;
 }
 
 function writePrivateFile(filePath, content) {

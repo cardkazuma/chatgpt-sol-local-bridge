@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { S6Runtime, S6_EXPECTED_TOOLS } from "../../scripts/s6-runtime.mjs";
+import { S6Runtime, S6_EXPECTED_TOOLS, dockerDesktopMountSourceMatches } from "../../scripts/s6-runtime.mjs";
 import { S6_REPOSITORY_URL, S6_GOVERNANCE_HOOKS_PATH, S6_GOVERNANCE_POLICY_PATH } from "../../scripts/s6-github-broker.mjs";
 
 const base = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-s6-runtime-test-"));
@@ -51,6 +51,12 @@ test("S6 broker proxy resource is controller-derived and credential-free", () =>
   const resources = runtime.makeResources();
   assert.equal(resources.brokerProxyName, `${resources.projectName}-broker-proxy`);
   assert.match(resources.brokerProxyName, /^s6-[a-z0-9]+-[0-9a-f]{12}-broker-proxy$/);
+});
+
+test("S6 mount audit accepts only Docker Desktop's exact host_mnt alias", () => {
+  assert.equal(dockerDesktopMountSourceMatches("/host_mnt/private/tmp/s6/workspace", "/tmp/s6/workspace", "darwin"), true);
+  assert.equal(dockerDesktopMountSourceMatches("/host_mnt/private/tmp/s6/other", "/tmp/s6/workspace", "darwin"), false);
+  assert.equal(dockerDesktopMountSourceMatches("/host_mnt/private/tmp/s6/workspace", "/tmp/s6/workspace", "linux"), false);
 });
 
 function escapeRegExp(value) {
