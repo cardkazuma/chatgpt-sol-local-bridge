@@ -144,8 +144,10 @@ test("S6 credential-time Git invocations isolate hooks, templates, and repositor
       bridgeRoot: repo,
       sessionId,
       platform: "linux",
-      credentialRunner: (_options, callback) => {
+      credentialRunner: (options, callback) => {
         credentialCalls += 1;
+        assert.equal(options.managerRoot, isolationManagerRoot);
+        assert.equal(Object.keys(options).some((key) => /^GH_|^GITHUB_/.test(key)), false);
         return callback({ helperBin: trustedHelper });
       },
     });
@@ -161,6 +163,9 @@ test("S6 credential-time Git invocations isolate hooks, templates, and repositor
     assert.equal(broker.gitEnvironment().GIT_CONFIG_SYSTEM, "/dev/null");
     assert.equal(broker.gitEnvironment().GIT_CONFIG_GLOBAL, "/dev/null");
     assert.equal(broker.gitEnvironment().GIT_TEMPLATE_DIR, emptyTemplate);
+    for (const key of ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST", "GH_CONFIG_DIR"]) {
+      assert.equal(key in broker.gitEnvironment(), false, `${key} leaked into broker Git`);
+    }
     assert.throws(() => broker.validateWorkspaceIdentity(workspace, branch), /alias\.status/);
     assert.equal(credentialCalls, 0, "repository aliases must be rejected before credential scope");
     runGit(["config", "--local", "--unset-all", "alias.status"], workspace, setupEnv);

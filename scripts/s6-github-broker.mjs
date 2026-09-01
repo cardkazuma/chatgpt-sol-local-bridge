@@ -68,9 +68,15 @@ export class S6GitHubBroker {
     bridgeRoot,
     sessionId,
     platform = process.platform,
-    credentialHelperBin,
-    codesignBin,
+    ghCommand,
+    ghRealpath,
+    ghSha256,
+    ghVersion,
+    ghConfigDir,
+    developerHome,
+    securityBin,
     credentialExpectedUid,
+    securityExpectedUid,
     credentialRunner = withS6GitCredentialHelper,
     gitRunner = null,
     remoteAdapter = null,
@@ -82,9 +88,15 @@ export class S6GitHubBroker {
     this.bridgeRoot = path.resolve(bridgeRoot);
     this.sessionId = sessionId;
     this.platform = platform;
-    this.credentialHelperBin = credentialHelperBin;
-    this.codesignBin = codesignBin;
+    this.ghCommand = ghCommand;
+    this.ghRealpath = ghRealpath;
+    this.ghSha256 = ghSha256;
+    this.ghVersion = ghVersion;
+    this.ghConfigDir = ghConfigDir;
+    this.developerHome = developerHome;
+    this.securityBin = securityBin;
     this.credentialExpectedUid = credentialExpectedUid;
+    this.securityExpectedUid = securityExpectedUid;
     this.credentialRunner = credentialRunner;
     this.gitRunner = gitRunner;
     this.remoteAdapter = remoteAdapter;
@@ -377,10 +389,17 @@ export class S6GitHubBroker {
 
   withCredential(callback) {
     return this.credentialRunner({
-      helperBin: this.credentialHelperBin,
-      codesignBin: this.codesignBin,
+      managerRoot: this.managerRoot,
+      ghCommand: this.ghCommand,
+      expectedRealpath: this.ghRealpath,
+      expectedSha256: this.ghSha256,
+      expectedVersion: this.ghVersion,
+      ghConfigDir: this.ghConfigDir,
+      expectedHome: this.developerHome,
+      securityBin: this.securityBin,
       platform: this.platform,
       expectedUid: this.credentialExpectedUid,
+      securityExpectedUid: this.securityExpectedUid,
     }, ({ helperBin }) => {
       if (!path.isAbsolute(helperBin)) throw new Error("trusted S6 Git credential helper path is invalid");
       return callback({ credentialHelper: helperBin });
