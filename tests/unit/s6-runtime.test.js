@@ -35,7 +35,7 @@ test("S6 runtime is fixed to the homelab source and exact 28-tool catalog", () =
   assert.match(override, new RegExp(`ENABLED_TOOLS: .*git_publish_branch`));
   assert.match(override, new RegExp(`BRIDGE_REVIEWED_HOOKS_PATH: ${escapeRegExp(S6_GOVERNANCE_HOOKS_PATH)}`));
   assert.match(override, new RegExp(`BRIDGE_REVIEWED_POLICY_PATH: ${escapeRegExp(S6_GOVERNANCE_POLICY_PATH)}`));
-  assert.match(override, /target: \/bridge-broker\/publish\.sock\n\s+read_only: false/, "Unix socket connect requires a writable bind while protocol authority remains fixed");
+  assert.match(override, /target: \/bridge-broker\n\s+read_only: false/, "Unix socket connect requires a writable channel-directory bind while protocol authority remains fixed");
   assert.doesNotMatch(override, /S6_BROKER_CAPABILITY|S6_GITHUB_TOKEN_FILE|GITHUB_TOKEN/);
   assert.deepEqual(runtime.readCatalogForCheck(), [...S6_EXPECTED_TOOLS]);
   assert.equal(S6_REPOSITORY_URL, "https://github.com/cardkazuma/homelab.git");
@@ -51,6 +51,9 @@ test("S6 host broker readiness is local and its socket is cleaned up", async () 
   await runtime.startBroker(session);
   try {
     assert.equal(fs.lstatSync(runtime.brokerSocketPath).isSocket(), true);
+    assert.equal(path.basename(runtime.brokerSocketPath), "p");
+    assert.match(runtime.brokerSocketPath, /b[0-9a-f]{12}\/p$/);
+    assert.equal(fs.lstatSync(path.dirname(runtime.brokerSocketPath)).mode & 0o777, 0o711);
     assert.equal(runtime.brokerProcess?.exitCode, null);
   } finally {
     await runtime.stopBroker();

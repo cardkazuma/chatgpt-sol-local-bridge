@@ -57,10 +57,10 @@ export function s6BrokerSocketPath(managerRoot, sessionId) {
   assertSessionId(sessionId);
   if (!managerRoot || !path.isAbsolute(managerRoot)) throw new Error("S6 broker manager root must be absolute");
   const suffix = crypto.createHash("sha256").update(sessionId).digest("hex").slice(0, 16);
-  // Keep the Unix socket directly under the private manager root: macOS has a
-  // short sockaddr path limit, and the manager root already supplies the
-  // ownership/permission boundary.
-  return path.join(path.resolve(managerRoot), `s6-${suffix}.sock`);
+  // Mount a session-unique, socket-only channel directory into the non-root
+  // bridge container. The short hashed component stays within macOS sockaddr
+  // limits; the broker capability and fixed protocol remain the authority.
+  return path.join(path.resolve(managerRoot), `b${suffix.slice(0, 12)}`, "p");
 }
 
 export class S6GitHubBroker {
@@ -666,8 +666,9 @@ function ensureParentPath(target, parent) {
 function ensureSocketParent(socketPath) {
   const parent = path.dirname(socketPath);
   fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
+  fs.chmodSync(parent, 0o711);
   const stat = fs.lstatSync(parent);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0) throw new Error("S6 broker socket parent must be private");
+  if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o777) !== 0o711) throw new Error("S6 broker socket parent must be an execute-only channel");
 }
 
 function ensurePrivateEmptyDirectory(directory, label) {
