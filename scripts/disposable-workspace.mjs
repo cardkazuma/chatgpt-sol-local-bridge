@@ -400,6 +400,11 @@ function validateWorkspaceContents(workspacePath, env, allowedTrackedPaths = new
     if (!classifyPolicyPath(relative).allowed && !allowedTrackedPaths.has(relative)) {
       throw new Error(`source contains forbidden tracked path: ${relative}`);
     }
+    if (hasRuntimeDirectory(relative)) {
+      const ignored = gitStatus(["check-ignore", "--no-index", "--quiet", "--", relative], workspacePath, env);
+      if (ignored.status === 0) throw new Error(`source contains repository-ignored tracked runtime path: ${relative}`);
+      if (ignored.status !== 1) throw new Error(`source ignored-state verification failed for tracked runtime path: ${relative}`);
+    }
   }
   walkNoSymlinks(workspacePath);
   const status = git(["status", "--porcelain", "--ignored", "--untracked-files=all"], workspacePath, env).trim();
@@ -494,15 +499,23 @@ function walkNoSymlinks(target) {
   for (const entry of fs.readdirSync(target, { withFileTypes: true })) walkNoSymlinks(path.join(target, entry.name));
 }
 
+function hasRuntimeDirectory(relative) {
+  return String(relative).split("/").slice(0, -1).some((part) => part.toLowerCase() === "runtime");
+}
+
 function git(args, cwd, env) {
-  const result = spawnSync("git", args, {
+  const result = gitStatus(args, cwd, env);
+  if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${(result.stderr || result.stdout || "").trim()}`);
+  return result.stdout || "";
+}
+
+function gitStatus(args, cwd, env) {
+  return spawnSync("git", args, {
     cwd,
     env,
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
   });
-  if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${(result.stderr || result.stdout || "").trim()}`);
-  return result.stdout || "";
 }
 
 function writeJsonExclusive(filePath, value) {

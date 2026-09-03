@@ -9,7 +9,7 @@ import path from "node:path";
 // before it has passed this classifier.
 export const DENIED_DIRECTORY_NAMES = Object.freeze(new Set([
   ".git", "node_modules", ".ds_store", ".storage", ".venv", "__pycache__",
-  "backups", "backup", "runtime", "logs", "log", "secrets", "credentials", "private",
+  "backups", "backup", "logs", "log", "secrets", "credentials", "private",
 ]));
 
 export const DENIED_FILE_PATTERNS = Object.freeze([

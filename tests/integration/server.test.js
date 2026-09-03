@@ -22,6 +22,15 @@ fs.writeFileSync(path.join(root, "ignored.txt"), "ignored\n");
 fs.writeFileSync(path.join(root, "fixture.log"), "credential-bearing disposable log\n");
 fs.mkdirSync(path.join(root, "backups"));
 fs.writeFileSync(path.join(root, "backups", "secret.txt"), "backup-secret\n");
+fs.mkdirSync(path.join(root, "app", "runtime"), { recursive: true });
+fs.writeFileSync(path.join(root, "app", "runtime", "config.mjs"), "export const marker = 'TRACKED_RUNTIME_CONFIG';\n");
+fs.writeFileSync(path.join(root, "app", "runtime", "server.mjs"), "export const marker = 'TRACKED_RUNTIME_SERVER';\n");
+fs.writeFileSync(path.join(root, "app", "runtime", "untracked.txt"), "UNTRACKED_RUNTIME_MATERIAL\n");
+spawnGit(["init", "-q", "-b", "main"], root);
+spawnGit(["config", "user.name", "Integration Fixture"], root);
+spawnGit(["config", "user.email", "integration-fixture@example.invalid"], root);
+spawnGit(["add", "--", ".gitignore", "README.md", "app/runtime/config.mjs", "app/runtime/server.mjs"], root);
+spawnGit(["commit", "--no-verify", "-qm", "tracked runtime source fixture"], root);
 process.env.BRIDGE_STATE_DIR = path.join(base, "state");
 process.env.BRIDGE_SCRATCH_DIR = path.join(base, "scratch");
 process.env.INCLUDE_SCRATCH_ROOT = "false";
@@ -145,6 +154,26 @@ test("workspace views and structured file access omit ignored/secret-sensitive p
   assert.doesNotMatch(snapshot, /\.env|fixture\.log|ignored\.txt|backups/);
   const search = assertOk(await call("search_text", { path: root, pattern: "disposable" }));
   assert.doesNotMatch(search, /fixture\.log|\.env|backup/);
+});
+
+test("structured read, write, tree, and search expose tracked runtime source but not untracked runtime material", async () => {
+  const runtimeRoot = path.join(root, "app", "runtime");
+  const config = path.join(runtimeRoot, "config.mjs");
+  const server = path.join(runtimeRoot, "server.mjs");
+  assert.match(assertOk(await call("read_file", { path: config })), /TRACKED_RUNTIME_CONFIG/);
+  assert.match(assertOk(await call("read_file", { path: server })), /TRACKED_RUNTIME_SERVER/);
+  assertOk(await call("write_file", { path: config, content: "export const marker = 'TRACKED_RUNTIME_CONFIG';\n" }));
+  assertError(await call("read_file", { path: path.join(runtimeRoot, "untracked.txt") }), /tracked regular source/);
+
+  const tree = assertOk(await call("workspace_tree", { path: root, maxDepth: 4 }));
+  assert.match(tree, /app[\\/]runtime[\\/]config\.mjs/);
+  assert.match(tree, /app[\\/]runtime[\\/]server\.mjs/);
+  assert.doesNotMatch(tree, /untracked\.txt/);
+
+  const search = assertOk(await call("search_text", { path: root, pattern: "TRACKED_RUNTIME_" }));
+  assert.match(search, /config\.mjs/);
+  assert.match(search, /server\.mjs/);
+  assert.doesNotMatch(search, /untracked\.txt/);
 });
 
 test("outside paths and symlink escapes are rejected by structured tools", async () => {

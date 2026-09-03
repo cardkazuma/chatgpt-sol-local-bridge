@@ -7,7 +7,7 @@ export const REVIEWED_HOOK_SOURCE = "#!/bin/sh\nset -eu\nexec node scripts/pre-c
 export const S6_REVIEWED_HOOK_SOURCE = "#!/bin/sh\nset -eu\nexec node \"${BRIDGE_REVIEWED_POLICY_PATH:?bridge policy path missing}\"\n";
 // Filled from the reviewed, committed policy helper.  A changed helper is a
 // governance change and must be reviewed before structured commits resume.
-export const REVIEWED_POLICY_SHA256 = "d7419e4c1e838d33d6864269b80fcd23fa1b846795ade767a1b692964ba20d8e";
+export const REVIEWED_POLICY_SHA256 = "47c4f1817c41a08e33ca2369847c913a108ad864527c28e1a03e992c5c26e72c";
 
 export function reviewedHooksPath() {
   return process.env.BRIDGE_REVIEWED_HOOKS_PATH || ".githooks";

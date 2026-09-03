@@ -72,7 +72,15 @@ test("S6 accepts only the fixed homelab repository and generated branch/ref", ()
 });
 
 test("S6 reuses the reviewed policy and fails closed on sensitive and governance paths", () => {
-  for (const name of [".env", "secrets.yaml", "runtime/cache.db", "logs/bridge.log", "private/id_rsa"]) {
+  for (const name of ["app/runtime/config.mjs", "app/runtime/server.mjs"]) {
+    assert.equal(classifyPolicyPath(name).allowed, true, name);
+    assert.equal(classifyPublishPath(name).allowed, true, name);
+  }
+  for (const name of [
+    ".env", "secrets.yaml", "app/runtime/.env", "app/runtime/db.env", "app/runtime/id_ed25519",
+    "app/runtime/cache.sqlite", "app/runtime/bridge.log", "app/runtime/snapshot.backup",
+    "runtime/cache.db", "logs/bridge.log", "private/id_rsa",
+  ]) {
     assert.equal(classifyPolicyPath(name).allowed, false, name);
     assert.equal(classifyPublishPath(name).allowed, false, name);
   }
@@ -255,6 +263,15 @@ test("S6 broker independently validates a clean linear graph and rejects bypasse
   assert.equal(session.coreHooksPath, S6_GOVERNANCE_HOOKS_PATH);
   assert.equal(readGit(["config", "--local", "--get", "remote.origin.url"], session.workspacePath), S6_REPOSITORY_URL);
   assert.equal(readGit(["config", "--local", "--get", "core.hooksPath"], session.workspacePath), S6_GOVERNANCE_HOOKS_PATH);
+  assert.equal(fs.statSync(path.join(session.workspacePath, ".githooks/commit-msg")).isFile(), true);
+  for (const relative of [
+    "credit-card-kb/operations-app/runtime/config.mjs",
+    "credit-card-kb/operations-app/runtime/pg-runtime.mjs",
+    "credit-card-kb/operations-app/runtime/server.mjs",
+    "credit-card-kb/operations-app/runtime/tailscale-identity.mjs",
+  ]) assert.equal(fs.statSync(path.join(session.workspacePath, relative)).isFile(), true, relative);
+  assert.equal(fs.existsSync(path.join(session.workspacePath, "credit-card-kb/operations-app/runtime/ignored.txt")), false);
+  assert.equal(fs.existsSync(path.join(session.workspacePath, "credit-card-kb/operations-app/runtime/untracked-state.txt")), false);
   assert.equal(credentialDelegationRounds.length, 1);
   assert.equal(fs.existsSync(path.join(managerRoot, "credential-tmp")), false);
   await assert.rejects(() => broker.publishBranch(), /at least one reviewed local commit/);
@@ -455,17 +472,32 @@ function offlineGitRunner(args, cwd, env) {
 
 function prepareSource() {
   fs.mkdirSync(source, { recursive: true, mode: 0o700 });
-  writeSource(".gitignore", "runtime/\n*.log\n.env\nignored.txt\n");
+  writeSource(".gitignore", "/runtime/\n/.githooks/\n*.log\n.env\nignored.txt\n");
   writeSource("README.md", "S6 baseline\n");
   writeSource("package.json", "{\"name\":\"s6-fixture\",\"private\":true}\n");
   writeSource("paperless/secrets/decrypt-passwords.txt.example", "change-me\n");
   writeSource("scripts/executable.sh", "#!/bin/sh\nexit 0\n");
+  writeSource(".githooks/commit-msg", "#!/bin/sh\nexit 0\n");
+  for (const relative of [
+    "credit-card-kb/operations-app/runtime/config.mjs",
+    "credit-card-kb/operations-app/runtime/pg-runtime.mjs",
+    "credit-card-kb/operations-app/runtime/server.mjs",
+    "credit-card-kb/operations-app/runtime/tailscale-identity.mjs",
+  ]) writeSource(relative, `export const fixture = ${JSON.stringify(relative)};\n`);
+  writeSource("credit-card-kb/operations-app/runtime/ignored.txt", "ignored runtime material\n");
+  writeSource("credit-card-kb/operations-app/runtime/untracked-state.txt", "untracked runtime material\n");
   fs.chmodSync(path.join(source, "scripts", "executable.sh"), 0o700);
   runGit(["init", "-q", "-b", "main"], source);
   runGit(["config", "core.hooksPath", "/dev/null"], source);
   runGit(["config", "user.name", "S6 Source"], source);
   runGit(["config", "user.email", "s6-source@example.invalid"], source);
-  runGit(["add", "--", ".gitignore", "README.md", "package.json", "paperless/secrets/decrypt-passwords.txt.example", "scripts/executable.sh"], source);
+  runGit(["add", "--", ".gitignore", "README.md", "package.json", "paperless/secrets/decrypt-passwords.txt.example", "scripts/executable.sh",
+    "credit-card-kb/operations-app/runtime/config.mjs",
+    "credit-card-kb/operations-app/runtime/pg-runtime.mjs",
+    "credit-card-kb/operations-app/runtime/server.mjs",
+    "credit-card-kb/operations-app/runtime/tailscale-identity.mjs",
+  ], source);
+  runGit(["add", "-f", "--", ".githooks/commit-msg"], source);
   runGit(["commit", "-qm", "S6 source baseline"], source);
 }
 

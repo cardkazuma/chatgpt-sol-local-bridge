@@ -18,7 +18,6 @@ const DENIED_DIRECTORY_NAMES = new Set([
   "__pycache__",
   "backups",
   "backup",
-  "runtime",
   "logs",
   "log",
   "secrets",
@@ -175,8 +174,10 @@ function assertLexicallyInWorkspace(target, scope) {
 // regular workspace check protects location; this check protects the content
 // class (including ignored files) even when a path is otherwise in-bounds.
 export function assertStructuredPath(target, { write = false } = {}) {
+  const requested = path.resolve(target);
   const canonical = assertInWorkspace(target, { write });
   assertNotIgnored(canonical);
+  assertRuntimePathIsTrackedSource(requested);
   return canonical;
 }
 
@@ -292,11 +293,68 @@ function isVisibleStructuredPath(target) {
   }
 }
 
+function assertRuntimePathIsTrackedSource(requested) {
+  const root = findRepositoryRoot(requested);
+  if (!root) return;
+  const relative = path.relative(root, requested);
+  if (!relative || relative === "." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return;
+
+  let stat;
+  try { stat = fs.lstatSync(requested); }
+  catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    stat = null;
+  }
+  const parts = relative.split(path.sep).filter(Boolean).map((part) => part.toLowerCase());
+  const beneathRuntime = parts.slice(0, -1).includes("runtime") || (stat?.isDirectory() && parts.at(-1) === "runtime");
+  if (!beneathRuntime) return;
+  if (stat?.isSymbolicLink()) throw new Error(`refusing symlink beneath runtime source directory: ${requested}`);
+
+  const tracked = trackedHeadPaths(root, relative);
+  if (stat?.isFile() && tracked.includes(toGitPath(relative))) return;
+  if (stat?.isDirectory() && tracked.some((name) => isVisibleTrackedRuntimeFile(root, name))) return;
+  throw new Error(`refusing runtime path that is not tracked regular source: ${requested}`);
+}
+
+function trackedHeadPaths(root, relative) {
+  const result = spawnSync("git", [
+    "--no-pager",
+    "-c", `safe.directory=${root}`,
+    "ls-tree",
+    "-r",
+    "--name-only",
+    "-z",
+    "HEAD",
+    "--",
+    toGitPath(relative),
+  ], {
+    cwd: root,
+    encoding: "utf8",
+    env: gitProbeEnvironment(),
+  });
+  if (result.status !== 0) throw new Error(`refusing runtime path because tracked-state verification failed: ${path.join(root, relative)}`);
+  return String(result.stdout || "").split("\0").filter(Boolean);
+}
+
+function isVisibleTrackedRuntimeFile(root, relative) {
+  const absolute = path.join(root, ...relative.split("/"));
+  let stat;
+  try { stat = fs.lstatSync(absolute); } catch { return false; }
+  if (!stat.isFile() || stat.isSymbolicLink() || sensitivePathReason(absolute)) return false;
+  return ignoredStatus(root, relative) === 1;
+}
+
 function assertNotIgnored(canonical) {
   const root = findRepositoryRoot(canonical);
   if (!root) return;
   const relative = path.relative(root, canonical);
   if (!relative || relative === ".") return;
+  const status = ignoredStatus(root, toGitPath(relative));
+  if (status === 0) throw new Error(`refusing repository-ignored path: ${canonical}`);
+  if (status !== 1) throw new Error(`refusing path because ignored-state verification failed: ${canonical}`);
+}
+
+function ignoredStatus(root, relative) {
   const result = spawnSync("git", [
     "--no-pager",
     "-c", `core.excludesFile=${nullDevice()}`,
@@ -311,8 +369,11 @@ function assertNotIgnored(canonical) {
     encoding: "utf8",
     env: gitProbeEnvironment(),
   });
-  if (result.status === 0) throw new Error(`refusing repository-ignored path: ${canonical}`);
-  if (result.status !== 1) throw new Error(`refusing path because ignored-state verification failed: ${canonical}`);
+  return result.status;
+}
+
+function toGitPath(value) {
+  return String(value).split(path.sep).join("/");
 }
 
 function findRepositoryRoot(target) {
