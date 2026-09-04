@@ -127,6 +127,30 @@ export class S6Runtime extends S5Runtime {
     });
   }
 
+  recoverGeneratedBranchAttachment({ sessionId, expectedCommit, expectedParent, expectedTree, expectedSubject } = {}) {
+    const state = this.readState();
+    if (!state || state.phase !== "running") throw new Error("S6 attachment recovery requires the running controller state");
+    if (state.sessionId !== sessionId) throw new Error("S6 attachment recovery session does not match the foreground runtime");
+    const manager = this.createManager({ readOnly: true });
+    const session = manager.readRecord(sessionId);
+    this.validateSession(session, manager);
+    const result = this.createBroker(sessionId).recoverGeneratedBranchAttachment({ expectedCommit, expectedParent, expectedTree, expectedSubject });
+    this.audit("workspace.recover-attachment", sessionId, "recovered", { commit: expectedCommit, branch: result.branch });
+    return result;
+  }
+
+  recordRecoveredBranchAttachment({ sessionId, expectedCommit, expectedParent, expectedTree, expectedSubject } = {}) {
+    const state = this.readState();
+    if (!state || state.phase !== "running" || state.sessionId !== sessionId) throw new Error("S6 attachment attestation requires the matching running controller state");
+    const manager = this.createManager({ readOnly: true });
+    const session = manager.readRecord(sessionId);
+    this.validateSession(session, manager);
+    assertRecoveredAttachmentAudit(this.auditRoot, { sessionId, branch: session.branch, commit: expectedCommit });
+    const result = this.createBroker(sessionId).recordAttachedRecoveryAttestation({ expectedCommit, expectedParent, expectedTree, expectedSubject });
+    this.audit("workspace.recover-attachment-attestation", sessionId, "recovered", { commit: expectedCommit, branch: result.branch });
+    return result;
+  }
+
   async createDockerResources(state, session) {
     this.activeSession = session;
     const { resources } = state;
@@ -420,8 +444,29 @@ async function main() {
   if (command === "workspace" && subcommand === "create") { console.log(JSON.stringify(runtime.workspaceCreate(args.source), null, 2)); return; }
   if (command === "workspace" && subcommand === "list") { console.log(JSON.stringify(runtime.workspaceList(), null, 2)); return; }
   if (command === "workspace" && subcommand === "destroy") { console.log(JSON.stringify(runtime.workspaceDestroy(args.session), null, 2)); return; }
+  if (command === "workspace" && subcommand === "recover-attachment") {
+    console.log(JSON.stringify(runtime.recoverGeneratedBranchAttachment({ sessionId: args.session, expectedCommit: args["expected-commit"], expectedParent: args["expected-parent"], expectedTree: args["expected-tree"], expectedSubject: args["expected-subject"] }), null, 2));
+    return;
+  }
+  if (command === "workspace" && subcommand === "record-recovered-attachment") {
+    console.log(JSON.stringify(runtime.recordRecoveredBranchAttachment({ sessionId: args.session, expectedCommit: args["expected-commit"], expectedParent: args["expected-parent"], expectedTree: args["expected-tree"], expectedSubject: args["expected-subject"] }), null, 2));
+    return;
+  }
   if (command === "supervise") { await runtime.supervise(args._[1] || runtime.stateFile); return; }
-  throw new Error("usage: s6-runtime.mjs {credential status|start|status|doctor|stop|recover|rollback|workspace create|workspace list|workspace destroy|supervise}");
+  throw new Error("usage: s6-runtime.mjs {credential status|start|status|doctor|stop|recover|rollback|workspace create|workspace list|workspace destroy|workspace recover-attachment|workspace record-recovered-attachment|supervise}");
+}
+
+function assertRecoveredAttachmentAudit(auditRoot, { sessionId, branch, commit }) {
+  const auditFile = path.join(auditRoot, "events.jsonl");
+  const stat = fs.lstatSync(auditFile);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("S6 attachment recovery audit is unavailable");
+  const found = fs.readFileSync(auditFile, "utf8").split(/\r?\n/).filter(Boolean).some((line) => {
+    try {
+      const event = JSON.parse(line);
+      return event.operation === "workspace.recover-attachment" && event.workspaceSession === sessionId && event.result === "recovered" && event.detail?.commit === commit && event.detail?.branch === branch;
+    } catch { return false; }
+  });
+  if (!found) throw new Error("S6 attachment recovery audit does not prove the exact prior controller recovery");
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {

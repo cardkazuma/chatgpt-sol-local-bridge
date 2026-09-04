@@ -22,7 +22,7 @@
     "s5:runtime": "node scripts/s5-runtime.mjs",
     "s5:runtime-proof": "node scripts/s5-runtime-proof.mjs",
     "s5:local-workflow-proof": "node scripts/s5-local-workflow-proof.mjs",
-    "s6:offline-proof": "node --test tests/unit/s6-broker.test.js tests/unit/s6-credential.test.js tests/unit/s6-proxy.test.js tests/unit/s6-runtime.test.js tests/unit/tool-contract.test.js",
+    "s6:offline-proof": "node --test tests/unit/git-commit-ordering.test.js tests/unit/s6-attachment-recovery.test.js tests/unit/s6-broker.test.js tests/unit/s6-credential.test.js tests/unit/s6-proxy.test.js tests/unit/s6-runtime.test.js tests/unit/tool-contract.test.js",
     "test": "node scripts/run-tests.mjs",
     "test:unit": "node scripts/run-tests.mjs unit",
     "test:integration": "node scripts/run-tests.mjs integration",

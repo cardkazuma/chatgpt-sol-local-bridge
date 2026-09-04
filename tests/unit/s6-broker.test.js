@@ -389,6 +389,7 @@ test("S6 broker socket protocol carries no caller-selected target", async () => 
     parseBrokerReady("S6_BROKER_READY");
     const capability = "a".repeat(64);
     assert.deepEqual(await brokerRequest(socketPath, { operation: "register", capability }), { registered: true });
+    assert.match((await brokerRequest(socketPath, { operation: "preflight-commit", capability, branch: "main" })).error, /no authority-bearing input/);
     assert.match((await brokerRequest(socketPath, { operation: "publish", capability: "b".repeat(64) })).error, /authentication/);
     assert.match((await brokerRequest(socketPath, { operation: "publish", capability, branch: "main", force: true, refspec: "*" })).error, /no authority-bearing input/);
   } finally {

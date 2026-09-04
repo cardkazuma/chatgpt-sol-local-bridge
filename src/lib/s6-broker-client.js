@@ -28,6 +28,10 @@ export function s6BrokerAttestCommit(sha) {
   return requestBroker({ operation: "attest", sha });
 }
 
+export function s6BrokerPreflightCommit() {
+  return requestBroker({ operation: "preflight-commit" });
+}
+
 export function s6BrokerPublishBranch() {
   return requestBroker({ operation: "publish" });
 }
@@ -41,6 +45,7 @@ function requestBroker(request, { registration = false } = {}) {
   const requestKeys = Object.keys(request).filter((key) => key !== "capability").sort();
   if (registration && (requestKeys.join(",") !== "operation" || request.operation !== "register")) throw new Error("invalid S6 broker registration request");
   if (!registration && request.operation === "publish" && requestKeys.join(",") !== "operation") throw new Error("invalid S6 publish request");
+  if (!registration && request.operation === "preflight-commit" && requestKeys.join(",") !== "operation") throw new Error("invalid S6 commit preflight request");
   if (!registration && request.operation === "attest" && (requestKeys.join(",") !== "operation,sha" || !/^[0-9a-f]{40}$/.test(String(request.sha || "")))) throw new Error("invalid S6 attestation request");
   const body = JSON.stringify({ capability, operation: request.operation, ...(request.sha ? { sha: request.sha } : {}) });
   return new Promise((resolve, reject) => {

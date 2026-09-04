@@ -31,6 +31,7 @@ const SHA = /^[0-9a-f]{40}$/;
 const SESSION = /^s6-[a-z0-9]+-[0-9a-f]{16}$/;
 const BRANCH = /^bridge\/s6\/s6-[a-z0-9]+-[0-9a-f]{16}$/;
 const REMOTE_REF = /^refs\/heads\/bridge\/s6\/s6-[a-z0-9]+-[0-9a-f]{16}$/;
+const ZERO_SHA = "0".repeat(40);
 const TOKEN_LIKE = /(?:github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9]+|Bearer\s+\S+|password[=:]\S+)/gi;
 
 export function assertS6RepositoryAlias(alias = S6_REPOSITORY_ALIAS) {
@@ -167,6 +168,83 @@ export class S6GitHubBroker {
     return { attested: true, commit: sha };
   }
 
+  preflightCommit() {
+    const record = this.validateRegisteredWorkspaceRecord();
+    this.validateManagerGovernance(record);
+    this.validateWorkspaceIdentity(record.workspacePath, record.branch, { requireClean: false });
+    return { preflight: true, branch: record.branch };
+  }
+
+  recoverGeneratedBranchAttachment(options = {}) {
+    if (!options || typeof options !== "object" || Array.isArray(options) || Object.keys(options).sort().join(",") !== "expectedCommit,expectedParent,expectedSubject,expectedTree") {
+      throw new Error("S6 attachment recovery accepts only exact reviewed commit expectations");
+    }
+    const { expectedCommit, expectedParent, expectedTree, expectedSubject } = options;
+    assertSha(expectedCommit, "expected recovery commit");
+    assertSha(expectedParent, "expected recovery parent");
+    assertSha(expectedTree, "expected recovery tree");
+    if (!String(expectedSubject || "") || String(expectedSubject).includes("\0")) throw new Error("expected recovery subject is invalid");
+
+    const record = this.validateRegisteredWorkspaceRecord();
+    this.validateManagerGovernance(record);
+    this.validateWorkspaceIdentity(record.workspacePath, record.branch, { requireAttachedBranch: false, requireClean: true });
+    if (record.expectedBaseCommit !== expectedParent || record.sourceCommit !== expectedParent) throw new Error("S6 registered workspace base did not match the expected commit parent");
+
+    const head = this.gitOutput(["rev-parse", "HEAD"], record.workspacePath).trim();
+    if (head !== expectedCommit) throw new Error("S6 recovery HEAD did not match the exact expected commit");
+    const graph = this.gitOutput(["rev-list", "--parents", "-n", "1", head], record.workspacePath).trim().split(/\s+/);
+    if (graph.length !== 2 || graph[0] !== head || graph[1] !== expectedParent) throw new Error("S6 recovery commit parent did not match the exact expected parent");
+    const tree = this.gitOutput(["rev-parse", `${head}^{tree}`], record.workspacePath).trim();
+    if (tree !== expectedTree) throw new Error("S6 recovery commit tree did not match the exact expected tree");
+    const subject = this.gitOutput(["show", "-s", "--format=%s", head], record.workspacePath).trim();
+    if (subject !== expectedSubject) throw new Error("S6 recovery commit subject did not match the exact expected subject");
+
+    const ref = `refs/heads/${record.branch}`;
+    const refResult = this.gitStatus(["rev-parse", "--verify", "--quiet", ref], record.workspacePath);
+    if (![0, 1].includes(refResult.status)) throw new Error("S6 generated branch ref could not be inspected");
+    const oldSha = refResult.status === 0 ? String(refResult.stdout || "").trim() : null;
+    if (oldSha !== null && oldSha !== expectedParent) throw new Error("S6 generated branch old ref did not match the exact expected parent");
+
+    try {
+      this.gitResult(["update-ref", ref, expectedCommit, oldSha || ZERO_SHA], record.workspacePath);
+    } catch (error) {
+      throw new Error(`S6 generated branch compare-and-swap failed: ${error.message}`);
+    }
+    if (this.gitOutput(["rev-parse", "--verify", ref], record.workspacePath).trim() !== expectedCommit) throw new Error("S6 generated branch compare-and-swap read-back failed");
+    if (this.gitOutput(["rev-parse", "HEAD"], record.workspacePath).trim() !== expectedCommit) throw new Error("S6 recovery HEAD moved during compare-and-swap");
+    this.gitResult(["symbolic-ref", "HEAD", ref], record.workspacePath);
+
+    if (this.gitOutput(["branch", "--show-current"], record.workspacePath).trim() !== record.branch) throw new Error("S6 recovery did not attach HEAD to the generated branch");
+    if (this.gitOutput(["rev-parse", "HEAD"], record.workspacePath).trim() !== expectedCommit) throw new Error("S6 recovery changed the expected commit");
+    if (this.gitOutput(["rev-parse", "HEAD^"], record.workspacePath).trim() !== expectedParent) throw new Error("S6 recovery changed the expected parent");
+    if (this.gitOutput(["rev-parse", "HEAD^{tree}"], record.workspacePath).trim() !== expectedTree) throw new Error("S6 recovery changed the expected tree");
+    const status = this.gitOutput(["status", "--porcelain=v1", "--ignored", "--untracked-files=all"], record.workspacePath);
+    if (status.trim()) throw new Error("S6 recovery did not preserve a clean worktree, index, and ignored set");
+    this.writeAttachmentRecoveryState({ record, commit: expectedCommit, parent: expectedParent, tree: expectedTree, subject: expectedSubject });
+    return { recovered: true, repository: S6_REPOSITORY_ALIAS, sessionId: this.sessionId, branch: record.branch, oldSha, commit: expectedCommit, status: "attached" };
+  }
+
+  recordAttachedRecoveryAttestation(options = {}) {
+    if (!options || typeof options !== "object" || Array.isArray(options) || Object.keys(options).sort().join(",") !== "expectedCommit,expectedParent,expectedSubject,expectedTree") {
+      throw new Error("S6 attachment attestation accepts only exact reviewed commit expectations");
+    }
+    const { expectedCommit, expectedParent, expectedTree, expectedSubject } = options;
+    assertSha(expectedCommit, "expected recovery commit");
+    assertSha(expectedParent, "expected recovery parent");
+    assertSha(expectedTree, "expected recovery tree");
+    const record = this.validateRegisteredWorkspaceRecord();
+    this.validateManagerGovernance(record);
+    this.validateWorkspaceIdentity(record.workspacePath, record.branch, { requireClean: true });
+    if (record.expectedBaseCommit !== expectedParent || record.sourceCommit !== expectedParent) throw new Error("S6 registered workspace base did not match the expected commit parent");
+    if (this.gitOutput(["rev-parse", "HEAD"], record.workspacePath).trim() !== expectedCommit) throw new Error("S6 attached recovery HEAD did not match the exact expected commit");
+    const graph = this.gitOutput(["rev-list", "--parents", "-n", "1", expectedCommit], record.workspacePath).trim().split(/\s+/);
+    if (graph.length !== 2 || graph[0] !== expectedCommit || graph[1] !== expectedParent) throw new Error("S6 attached recovery parent did not match the exact expected parent");
+    if (this.gitOutput(["rev-parse", `${expectedCommit}^{tree}`], record.workspacePath).trim() !== expectedTree) throw new Error("S6 attached recovery tree did not match the exact expected tree");
+    if (this.gitOutput(["show", "-s", "--format=%s", expectedCommit], record.workspacePath).trim() !== expectedSubject) throw new Error("S6 attached recovery subject did not match the exact expected subject");
+    this.writeAttachmentRecoveryState({ record, commit: expectedCommit, parent: expectedParent, tree: expectedTree, subject: expectedSubject });
+    return { recorded: true, repository: S6_REPOSITORY_ALIAS, sessionId: this.sessionId, branch: record.branch, commit: expectedCommit, status: "attested" };
+  }
+
   async publishBranch() {
     const validation = this.validateLocalPublishState({ requireAttestations: true });
     const { record, head, base, commits } = validation;
@@ -220,14 +298,7 @@ export class S6GitHubBroker {
   }
 
   validateLocalPublishState({ requireAttestations = true } = {}) {
-    const record = this.readWorkspaceState(this.sessionId);
-    if (record.state !== "active") throw new Error("S6 manager session is not active");
-    if (record.source !== S6_REPOSITORY_URL) throw new Error("S6 session source is not canonical homelab");
-    if (record.branch !== s6BranchForSession(this.sessionId) || !BRANCH.test(record.branch)) throw new Error("S6 local branch is not the generated bridge branch");
-    if (path.resolve(record.workspacePath) !== this.workspacePath(this.sessionId)) throw new Error("S6 workspace path is not manager-owned");
-    if (path.resolve(record.statePath) !== path.join(this.stateRoot, `${this.sessionId}.json`)) throw new Error("S6 state path is not manager-owned");
-    if (!SHA.test(record.expectedBaseCommit || "")) throw new Error("S6 expected canonical base is missing");
-    if (record.coreHooksPath !== S6_GOVERNANCE_HOOKS_PATH) throw new Error("S6 reviewed external governance is not active");
+    const record = this.validateRegisteredWorkspaceRecord();
     this.validateManagerGovernance(record);
     this.validateWorkspaceIdentity(record.workspacePath, record.branch);
     const base = record.expectedBaseCommit;
@@ -235,6 +306,7 @@ export class S6GitHubBroker {
     assertSha(head, "S6 local HEAD");
     if (!this.isAncestor(base, head, record.workspacePath)) throw new Error("S6 local HEAD is not a descendant of the recorded base");
     this.restorePublishedAttestations(record, base, head);
+    this.restoreAttachmentRecoveryAttestation(record, base, head);
     const commits = this.graphCommits(record.workspacePath, base, head);
     if (requireAttestations) {
       for (const sha of commits) if (!this.attestedShas.has(sha)) throw new Error("S6 publish requires every unpublished commit to have a structured-commit attestation");
@@ -250,6 +322,19 @@ export class S6GitHubBroker {
       }
     }
     return { record, base, head, commits, changed };
+  }
+
+  validateRegisteredWorkspaceRecord() {
+    const record = this.readWorkspaceState(this.sessionId);
+    if (record.state !== "active") throw new Error("S6 manager session is not active");
+    if (record.sessionId !== this.sessionId) throw new Error("S6 manager session identity mismatch");
+    if (record.source !== S6_REPOSITORY_URL) throw new Error("S6 session source is not canonical homelab");
+    if (record.branch !== s6BranchForSession(this.sessionId) || !BRANCH.test(record.branch)) throw new Error("S6 generated branch registry identity mismatch");
+    if (path.resolve(record.workspacePath) !== this.workspacePath(this.sessionId)) throw new Error("S6 workspace path is not manager-owned");
+    if (path.resolve(record.statePath) !== path.join(this.stateRoot, `${this.sessionId}.json`)) throw new Error("S6 state path is not manager-owned");
+    if (!SHA.test(record.expectedBaseCommit || "") || !SHA.test(record.sourceCommit || "")) throw new Error("S6 expected canonical base is missing");
+    if (record.coreHooksPath !== S6_GOVERNANCE_HOOKS_PATH) throw new Error("S6 reviewed external governance is not active");
+    return record;
   }
 
   assertPublishPath(workspacePath, name, { previousRef = "HEAD", candidateRef = "HEAD" } = {}) {
@@ -271,12 +356,44 @@ export class S6GitHubBroker {
     for (const sha of this.graphCommits(record.workspacePath, base, trustedTarget)) this.attestedShas.add(sha);
   }
 
-  validateWorkspaceIdentity(workspacePath, branch) {
+  attachmentRecoveryStatePath() { return path.join(this.stateRoot, `${this.sessionId}.attachment-recovery.json`); }
+
+  writeAttachmentRecoveryState({ record, commit, parent, tree, subject }) {
+    atomicWrite(this.attachmentRecoveryStatePath(), {
+      version: 1,
+      kind: "s6-attachment-recovery",
+      repository: S6_REPOSITORY_ALIAS,
+      sessionId: this.sessionId,
+      branch: record.branch,
+      baseCommit: record.expectedBaseCommit,
+      commit,
+      parent,
+      tree,
+      subject,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  restoreAttachmentRecoveryAttestation(record, base, head) {
+    const state = readJson(this.attachmentRecoveryStatePath());
+    if (!state) return;
+    if (state.version !== 1 || state.kind !== "s6-attachment-recovery" || state.repository !== S6_REPOSITORY_ALIAS || state.sessionId !== this.sessionId || state.branch !== record.branch || state.baseCommit !== base || !SHA.test(state.commit || "") || state.parent !== base || !SHA.test(state.tree || "") || !String(state.subject || "")) {
+      throw new Error("S6 attachment recovery attestation state is invalid");
+    }
+    if (!this.isAncestor(state.commit, head, record.workspacePath)) throw new Error("S6 attachment recovery attestation is not in the current branch history");
+    const graph = this.gitOutput(["rev-list", "--parents", "-n", "1", state.commit], record.workspacePath).trim().split(/\s+/);
+    if (graph.length !== 2 || graph[0] !== state.commit || graph[1] !== state.parent) throw new Error("S6 attachment recovery attestation parent changed");
+    if (this.gitOutput(["rev-parse", `${state.commit}^{tree}`], record.workspacePath).trim() !== state.tree) throw new Error("S6 attachment recovery attestation tree changed");
+    if (this.gitOutput(["show", "-s", "--format=%s", state.commit], record.workspacePath).trim() !== state.subject) throw new Error("S6 attachment recovery attestation subject changed");
+    this.attestedShas.add(state.commit);
+  }
+
+  validateWorkspaceIdentity(workspacePath, branch, { requireAttachedBranch = true, requireClean = true } = {}) {
     if (!fs.existsSync(workspacePath) || fs.realpathSync(workspacePath) !== fs.realpathSync(path.resolve(workspacePath))) throw new Error("S6 workspace is not a real manager-owned directory");
     const gitDir = path.join(workspacePath, ".git");
     const gitStat = fs.lstatSync(gitDir);
     if (!gitStat.isDirectory() || gitStat.isSymbolicLink()) throw new Error("S6 workspace Git directory is not a real directory");
-    if (this.gitOutput(["branch", "--show-current"], workspacePath).trim() !== branch) throw new Error("S6 HEAD is not attached to the generated branch");
+    if (requireAttachedBranch && this.gitOutput(["branch", "--show-current"], workspacePath).trim() !== branch) throw new Error("S6 HEAD is not attached to the generated branch");
     if (this.gitOutput(["rev-parse", "--is-shallow-repository"], workspacePath).trim() !== "false") throw new Error("S6 workspace is shallow");
     if (this.gitOutput(["remote"], workspacePath).trim().split(/\r?\n/).filter(Boolean).join("\n") !== S6_REMOTE_NAME) throw new Error("S6 workspace has an unexpected remote");
     const urls = this.gitOutput(["config", "--local", "--get-all", `remote.${S6_REMOTE_NAME}.url`], workspacePath).trim().split(/\r?\n/).filter(Boolean);
@@ -292,8 +409,10 @@ export class S6GitHubBroker {
         throw new Error(`S6 repository-controlled Git config is not allowed: ${key}`);
       }
     }
-    const status = this.gitOutput(["status", "--porcelain=v1", "--ignored", "--untracked-files=all"], workspacePath);
-    if (status.trim()) throw new Error("S6 publish requires a clean worktree, index, and ignored set");
+    if (requireClean) {
+      const status = this.gitOutput(["status", "--porcelain=v1", "--ignored", "--untracked-files=all"], workspacePath);
+      if (status.trim()) throw new Error("S6 publish requires a clean worktree, index, and ignored set");
+    }
   }
 
   validateManagerGovernance(record) {
@@ -589,6 +708,10 @@ export async function dispatchS6BrokerRequest(broker, authState, request) {
   if (request.operation === "attest") {
     if (Object.keys(request).sort().join(",") !== "capability,operation,sha") throw new Error("invalid attest request");
     return broker.attestCommit(request.sha);
+  }
+  if (request.operation === "preflight-commit") {
+    if (Object.keys(request).sort().join(",") !== "capability,operation") throw new Error("commit preflight accepts no authority-bearing input");
+    return broker.preflightCommit();
   }
   if (request.operation === "publish") {
     if (Object.keys(request).sort().join(",") !== "capability,operation") throw new Error("publish accepts no authority-bearing input");

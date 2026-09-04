@@ -4,7 +4,7 @@ import { z } from "zod";
 import { runCommand } from "../lib/exec.js";
 import { assertInWorkspace, assertStructuredPath, canonicalPath, currentWorkspace, isWithin, resolveUserPath } from "../lib/paths.js";
 import { assertReviewedHooks, reviewedHooksPath } from "../lib/git-governance.js";
-import { s6BrokerAttestCommit, s6BrokerConfigured, s6BrokerPublishBranch } from "../lib/s6-broker-client.js";
+import { s6BrokerAttestCommit, s6BrokerConfigured, s6BrokerPreflightCommit, s6BrokerPublishBranch } from "../lib/s6-broker-client.js";
 import { registerEnabledTool } from "../lib/tool-registry.js";
 import { fail, json } from "../lib/text.js";
 import { assertGovernedGitPath } from "../../scripts/pre-commit-policy.mjs";
@@ -108,25 +108,7 @@ export function registerGit(server) {
   }, async ({ cwd, message } = {}, extra) => {
     try {
       const root = await repositoryRoot(cwd, { write: true });
-      if (!String(message).trim() || String(message).includes("\0")) return fail("commit message must be non-empty and contain no NUL bytes");
-      await assertReviewedHooks(root, extra?.signal);
-      const staged = await stagedPaths(root, extra?.signal);
-      if (!staged.length) return fail("git_commit requires selected staged paths");
-      const deleted = await stagedDeletedPaths(root, extra?.signal);
-      if (deleted.length) return fail(`git_commit refuses staged deletions: ${deleted.join(", ")}`);
-      for (const value of staged) assertGovernedGitPath({ root, name: value, label: "git_commit" });
-      if (process.env.BRIDGE_GOVERNANCE_MODE === "s6" && !s6BrokerConfigured()) return fail("S6 structured commits require the manager-owned broker attestation channel");
-      const result = await git(["-c", `core.hooksPath=${reviewedHooksPath()}`, "commit", "-m", String(message)], root, extra?.signal);
-      if (process.env.BRIDGE_GOVERNANCE_MODE === "s6") {
-        const head = await git(["rev-parse", "HEAD"], root, extra?.signal);
-        if (!head.ok) return fail("S6 commit was created but its HEAD could not be attested");
-        try {
-          await s6BrokerAttestCommit(head.stdout.trim());
-        } catch (error) {
-          return fail(`S6 commit was created but is not publishable: ${error.message}`);
-        }
-      }
-      return json(result);
+      return json(await commitReviewedIndex({ root, message, signal: extra?.signal }));
     } catch (error) {
       return fail(error.message);
     }
@@ -146,6 +128,43 @@ export function registerGit(server) {
       return fail(error.message);
     }
   });
+}
+
+export async function commitReviewedIndex({
+  root,
+  message,
+  signal,
+  governanceMode = process.env.BRIDGE_GOVERNANCE_MODE || "s5",
+  brokerConfigured = s6BrokerConfigured,
+  preflight = s6BrokerPreflightCommit,
+  attest = s6BrokerAttestCommit,
+} = {}) {
+  if (!String(message).trim() || String(message).includes("\0")) throw new Error("commit message must be non-empty and contain no NUL bytes");
+  await assertReviewedHooks(root, signal, { mode: governanceMode });
+  const staged = await stagedPaths(root, signal);
+  if (!staged.length) throw new Error("git_commit requires selected staged paths");
+  const deleted = await stagedDeletedPaths(root, signal);
+  if (deleted.length) throw new Error(`git_commit refuses staged deletions: ${deleted.join(", ")}`);
+  for (const value of staged) assertGovernedGitPath({ root, name: value, label: "git_commit" });
+  if (governanceMode === "s6") {
+    if (!brokerConfigured()) throw new Error("S6 structured commits require the manager-owned broker attestation channel");
+    try {
+      await preflight();
+    } catch (error) {
+      throw new Error(`S6 commit is not publishable before commit: ${error.message}`);
+    }
+  }
+  const result = await git(["-c", `core.hooksPath=${reviewedHooksPath()}`, "commit", "-m", String(message)], root, signal);
+  if (governanceMode === "s6") {
+    const head = await git(["rev-parse", "HEAD"], root, signal);
+    if (!head.ok) throw new Error("S6 commit was created but its HEAD could not be attested");
+    try {
+      await attest(head.stdout.trim());
+    } catch (error) {
+      throw new Error(`S6 commit was created but is not publishable: ${error.message}`);
+    }
+  }
+  return result;
 }
 
 async function runGitRead(args, cwd, signal) {
