@@ -8,8 +8,8 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { withS6GitCredentialHelper } from "./s6-credential.mjs";
 import {
+  assertGovernedGitPath,
   classifyPolicyPath,
-  classifyPublishPath,
   isHighRiskGovernancePath,
   normalizeRepositoryName,
 } from "./pre-commit-policy.mjs";
@@ -246,18 +246,21 @@ export class S6GitHubBroker {
     }
     for (const sha of commits) {
       for (const name of this.commitChangedPaths(record.workspacePath, sha)) {
-        this.assertPublishPath(record.workspacePath, name);
+        this.assertPublishPath(record.workspacePath, name, { previousRef: `${sha}^`, candidateRef: sha });
       }
     }
     return { record, base, head, commits, changed };
   }
 
-  assertPublishPath(workspacePath, name) {
-    const decision = classifyPublishPath(name);
-    if (!decision.allowed) throw new Error(`${decision.reason}: ${name}`);
-    const ignored = this.gitStatus(["check-ignore", "--no-index", "--quiet", "--", name], workspacePath);
-    if (ignored.status === 0) throw new Error(`S6 publish refuses repository-ignored path: ${name}`);
-    if (ignored.status !== 1) throw new Error(`S6 could not verify ignored state for publish path: ${name}`);
+  assertPublishPath(workspacePath, name, { previousRef = "HEAD", candidateRef = "HEAD" } = {}) {
+    assertGovernedGitPath({
+      root: workspacePath,
+      name,
+      previousRef,
+      candidateRef,
+      publish: true,
+      label: "S6 publish",
+    });
   }
 
   restorePublishedAttestations(record, base, head) {

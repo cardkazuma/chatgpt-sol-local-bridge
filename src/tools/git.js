@@ -7,6 +7,7 @@ import { assertReviewedHooks, reviewedHooksPath } from "../lib/git-governance.js
 import { s6BrokerAttestCommit, s6BrokerConfigured, s6BrokerPublishBranch } from "../lib/s6-broker-client.js";
 import { registerEnabledTool } from "../lib/tool-registry.js";
 import { fail, json } from "../lib/text.js";
+import { assertGovernedGitPath } from "../../scripts/pre-commit-policy.mjs";
 
 export function registerGit(server) {
   registerEnabledTool(server, "git_status", {
@@ -111,9 +112,9 @@ export function registerGit(server) {
       await assertReviewedHooks(root, extra?.signal);
       const staged = await stagedPaths(root, extra?.signal);
       if (!staged.length) return fail("git_commit requires selected staged paths");
-      for (const value of staged) selectedRepoPath(root, value, { allowMissing: true });
       const deleted = await stagedDeletedPaths(root, extra?.signal);
       if (deleted.length) return fail(`git_commit refuses staged deletions: ${deleted.join(", ")}`);
+      for (const value of staged) assertGovernedGitPath({ root, name: value, label: "git_commit" });
       if (process.env.BRIDGE_GOVERNANCE_MODE === "s6" && !s6BrokerConfigured()) return fail("S6 structured commits require the manager-owned broker attestation channel");
       const result = await git(["-c", `core.hooksPath=${reviewedHooksPath()}`, "commit", "-m", String(message)], root, extra?.signal);
       if (process.env.BRIDGE_GOVERNANCE_MODE === "s6") {

@@ -218,6 +218,20 @@ test("structured Git writes use local branches, selected staging, and the review
   const commit = assertOk(await call("git_commit", { cwd: root, message: "S1 fixture commit" }));
   assert.match(commit, /S1 pre-commit policy passed/);
 
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "project-resolver.json"), "{\"state\":\"baseline\"}\n");
+  fs.appendFileSync(path.join(root, ".gitignore"), "/*/*\n");
+  spawnGit(["add", "--", ".gitignore"], root);
+  spawnGit(["add", "-f", "--", "docs/project-resolver.json"], root);
+  spawnGit(["commit", "--no-verify", "-qm", "tracked ignored fixture baseline"], root);
+  fs.writeFileSync(path.join(root, "docs", "project-resolver.json"), "{\"state\":\"modified\"}\n");
+  spawnGit(["add", "--", "docs/project-resolver.json"], root);
+  const trackedIgnoredCommit = assertOk(await call("git_commit", { cwd: root, message: "Commit pretracked ignored fixture" }));
+  assert.match(trackedIgnoredCommit, /S1 pre-commit policy passed/);
+
+  fs.writeFileSync(path.join(root, "docs", "new-ignored.json"), "{\"state\":\"new\"}\n");
+  assertError(await call("git_stage", { cwd: root, paths: ["docs/new-ignored.json"] }), /repository-ignored/);
+
   assert.match(assertOk(await call("git_status", { cwd: root })), /s1\/isolated/);
   assert.match(assertOk(await call("git_log", { cwd: root, limit: 5 })), /S1 fixture commit/);
   assertOk(await call("git_diff", { cwd: root }));

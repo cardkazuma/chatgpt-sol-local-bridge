@@ -70,6 +70,35 @@ export function classifyPublishPath(name) {
   return { ...policy, highRisk: false };
 }
 
+export function assertGovernedGitPath({
+  root,
+  name,
+  previousRef = "HEAD",
+  candidateRef = "",
+  publish = false,
+  label = "Git governance",
+} = {}) {
+  const decision = publish ? classifyPublishPath(name) : classifyPolicyPath(name);
+  if (!decision.allowed) throw new Error(`${label} refused ${decision.reason}: ${name}`);
+
+  const candidate = candidateRef
+    ? treeEntry(root, candidateRef, decision.path)
+    : indexEntry(root, decision.path);
+  if (!isRegularFileEntry(candidate)) {
+    throw new Error(`${label} refused staged object that is not an ordinary regular file: ${name}`);
+  }
+
+  const ignored = gitProbe(root, ["check-ignore", "--no-index", "--quiet", "--", decision.path]);
+  if (ignored.status === 1) return { ...decision, ignored: false, pretracked: false };
+  if (ignored.status !== 0) {
+    throw new Error(`${label} could not verify ignored state: ${name}${ignored.stderr ? ` (${ignored.stderr.trim()})` : ""}`);
+  }
+
+  const previous = treeEntry(root, previousRef, decision.path, { missingRefAllowed: true });
+  if (!isRegularFileEntry(previous)) throw new Error(`${label} refused repository-ignored path: ${name}`);
+  return { ...decision, ignored: true, pretracked: true };
+}
+
 export function runPreCommitPolicy({ cwd = process.cwd(), output = process.stderr } = {}) {
   // The bridge invokes Git with --literal-pathspecs. Git propagates that
   // setting to hooks, but check-ignore does not accept that pathspec mode.
@@ -83,11 +112,7 @@ export function runPreCommitPolicy({ cwd = process.cwd(), output = process.stder
     .split("\0")
     .filter(Boolean);
   for (const name of names) {
-    const decision = classifyPolicyPath(name);
-    if (!decision.allowed) throw new Error(`pre-commit refused ${decision.reason}: ${name}`);
-    const ignored = spawnSync("git", ["-c", `safe.directory=${root}`, "check-ignore", "--no-index", "--quiet", "--", name], { cwd: root, encoding: "utf8" });
-    if (ignored.status === 0) throw new Error(`pre-commit refused repository-ignored path: ${name}`);
-    if (ignored.status !== 1) throw new Error(`pre-commit could not verify ignored state: ${name}${ignored.stderr ? ` (${ignored.stderr.trim()})` : ""}`);
+    assertGovernedGitPath({ root, name, label: "pre-commit" });
     const absolute = path.join(root, name);
     if (fs.existsSync(absolute) && fs.lstatSync(absolute).isSymbolicLink()) {
       throw new Error(`pre-commit refused staged symlink: ${name}`);
@@ -98,6 +123,62 @@ export function runPreCommitPolicy({ cwd = process.cwd(), output = process.stder
   const label = process.env.BRIDGE_GOVERNANCE_MODE === "s6" ? "S6" : "S1";
   output.write(`${label} pre-commit policy passed (${names.length} path${names.length === 1 ? "" : "s"})\n`);
   return { root, names };
+}
+
+function indexEntry(root, name) {
+  const result = gitProbe(root, ["ls-files", "--stage", "-z", "--", name], { literalPathspecs: true });
+  if (result.status !== 0) throw new Error(`Git governance could not inspect staged object: ${name}`);
+  const entries = String(result.stdout || "").split("\0").filter(Boolean).map(parseIndexEntry);
+  return entries.length === 1 && entries[0].stage === "0" && entries[0].name === name ? entries[0] : null;
+}
+
+function treeEntry(root, ref, name, { missingRefAllowed = false } = {}) {
+  const verified = gitProbe(root, ["rev-parse", "--verify", "--quiet", `${ref}^{tree}`]);
+  if (verified.status !== 0) {
+    if (missingRefAllowed && verified.status === 1) return null;
+    throw new Error(`Git governance could not verify tree reference: ${ref}`);
+  }
+  const result = gitProbe(root, ["ls-tree", "-z", ref, "--", name], { literalPathspecs: true });
+  if (result.status !== 0) throw new Error(`Git governance could not inspect tree object: ${name}`);
+  const entries = String(result.stdout || "").split("\0").filter(Boolean).map(parseTreeEntry);
+  return entries.length === 1 && entries[0].name === name ? entries[0] : null;
+}
+
+function parseIndexEntry(value) {
+  const match = value.match(/^([0-9]+) ([0-9a-f]+) ([0-3])\t([\s\S]*)$/);
+  return match ? { mode: match[1], object: match[2], stage: match[3], name: match[4] } : {};
+}
+
+function parseTreeEntry(value) {
+  const match = value.match(/^([0-9]+) (\w+) ([0-9a-f]+)\t([\s\S]*)$/);
+  return match ? { mode: match[1], type: match[2], object: match[3], name: match[4] } : {};
+}
+
+function isRegularFileEntry(entry) {
+  return Boolean(entry && entry.type !== "commit" && (entry.mode === "100644" || entry.mode === "100755"));
+}
+
+function gitProbe(root, args, { literalPathspecs = false } = {}) {
+  return spawnSync("git", [
+    "--no-pager",
+    ...(literalPathspecs ? ["--literal-pathspecs"] : []),
+    "-c", `safe.directory=${root}`,
+    "-c", `core.excludesFile=${process.platform === "win32" ? "NUL" : "/dev/null"}`,
+    ...args,
+  ], {
+    cwd: root,
+    encoding: "utf8",
+    env: {
+      PATH: process.env.PATH || "/usr/bin:/bin",
+      LANG: "C",
+      LC_ALL: "C",
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_SYSTEM: process.platform === "win32" ? "NUL" : "/dev/null",
+      GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_OPTIONAL_LOCKS: "0",
+    },
+  });
 }
 
 if (path.basename(process.argv[1] || "") === "pre-commit-policy.mjs") {
