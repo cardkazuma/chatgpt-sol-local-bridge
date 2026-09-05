@@ -4,7 +4,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { z } from "zod";
 import { commandExists, runCommand } from "../lib/exec.js";
-import { coordinatorBeforeMutation } from "../lib/coordinator-guard.js";
+import { assertCoordinatorWriteBoundary, coordinatorBeforeMutation, coordinatorObserveRead } from "../lib/coordinator-guard.js";
 import { denyDeleteMessage, queueDestructive } from "../lib/policy.js";
 import { assertStructuredPath, currentWorkspace, fileSnapshot, resolveUserPath, visibleFilePaths } from "../lib/paths.js";
 import { registerEnabledTool } from "../lib/tool-registry.js";
@@ -20,7 +20,15 @@ export function registerFiles(server) {
     },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
   }, async ({ path: input, maxBytes }) => {
-    try { return json(fileSnapshot(assertStructuredPath(resolveUserPath(input)), { maxBytes: maxBytes ?? 200_000 })); }
+    try {
+      const resolved = assertStructuredPath(resolveUserPath(input));
+      const snapshot = fileSnapshot(resolved, { maxBytes: maxBytes ?? 200_000 });
+      if (snapshot.type === "file" && !snapshot.truncated) {
+        const bytes = snapshot.encoding === "base64" ? Buffer.from(snapshot.content, "base64") : Buffer.from(snapshot.content, "utf8");
+        await coordinatorObserveRead({ targetPath: resolved, contentSha256: sha256(bytes) });
+      }
+      return json(snapshot);
+    }
     catch (error) { return fail(error.message); }
   });
 
@@ -52,7 +60,9 @@ export function registerFiles(server) {
   }, async ({ path: input, content }) => {
     try {
       const resolved = assertStructuredPath(resolveUserPath(input), { write: true });
-      await coordinatorBeforeMutation({ operation: "write_file", targetPath: resolved });
+      const observedContentSha256 = fs.existsSync(resolved) ? undefined : null;
+      const guard = await coordinatorBeforeMutation({ operation: "write_file", targetPath: resolved, observedContentSha256 });
+      assertCoordinatorWriteBoundary({ targetPath: resolved, result: guard.result });
       fs.mkdirSync(path.dirname(resolved), { recursive: true });
       if (fs.existsSync(resolved) && fs.statSync(resolved).size > 0 && content.length === 0) {
         const current = fs.readFileSync(resolved);
@@ -95,9 +105,13 @@ export function registerFiles(server) {
       const gitApply = ["git", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "apply"];
       const check = await runCommand([...gitApply, "--check", "--whitespace=nowarn", "-"], { cwd: root, shell: false, stdin: diff, signal: extra?.signal });
       if (!check.ok) return fail(check.stderr || check.stdout || "git apply --check failed");
-      for (const target of patchTargetPaths(diff, root)) {
-        await coordinatorBeforeMutation({ operation: "apply_patch", targetPath: target });
+      const targets = patchTargetPaths(diff, root);
+      const observations = targets.map((target) => ({ target, observedContentSha256: observedContentVersion(target) }));
+      const guards = [];
+      for (const { target, observedContentSha256 } of observations) {
+        guards.push(await coordinatorBeforeMutation({ operation: "apply_patch", targetPath: target, observedContentSha256 }));
       }
+      for (const { target } of observations) assertCoordinatorWriteBoundary({ targetPath: target, result: guards.shift().result });
       const result = await runCommand([...gitApply, "--whitespace=nowarn", "-"], { cwd: root, shell: false, stdin: diff, signal: extra?.signal });
       return result.ok ? ok(result.stdout || `applied patch in ${root}`) : fail(result.stderr || result.stdout || "git apply failed");
     } catch (error) {
@@ -131,7 +145,10 @@ export function registerFiles(server) {
           expectedSha256: sha256(Buffer.from(current)),
         })));
       }
-      await coordinatorBeforeMutation({ operation: "edit_file", targetPath: resolved });
+      const guard = await coordinatorBeforeMutation({
+        operation: "edit_file", targetPath: resolved, observedContentSha256: sha256(Buffer.from(current, "utf8")),
+      });
+      assertCoordinatorWriteBoundary({ targetPath: resolved, result: guard.result });
       atomicWriteText(resolved, next);
       return ok(`updated ${resolved} (${replaceAll ? matches : 1} replacement${matches === 1 ? "" : "s"})`);
     } catch (error) {
@@ -233,6 +250,13 @@ function atomicWriteText(target, content) {
 
 function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function observedContentVersion(target) {
+  if (!fs.existsSync(target)) return null;
+  const stat = fs.lstatSync(target);
+  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error("patch target is not a regular file");
+  return sha256(fs.readFileSync(target));
 }
 
 function countOccurrences(text, search) {

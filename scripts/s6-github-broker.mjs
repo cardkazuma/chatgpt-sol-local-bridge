@@ -188,7 +188,7 @@ export class S6GitHubBroker {
    * container supplies only a route and normalized repository-relative path;
    * all authority-bearing identity and store binding is derived here.
    */
-  async coordinateMutation({ route, path: repositoryRelativePath } = {}) {
+  async coordinateMutation({ route, path: repositoryRelativePath, observedContentSha256 = undefined } = {}) {
     if (!S7B_COORDINATED_ROUTES.has(route)) throw new Error("S7-B coordinator route is not covered by the Bridge adapter");
     const relative = assertCoordinatorRelativePath(repositoryRelativePath);
     const record = this.validateRegisteredWorkspaceRecord();
@@ -205,11 +205,16 @@ export class S6GitHubBroker {
     const context = this.coordinatorContext(record);
     await this.ensureCoordinatorSession(context);
     const resource = { path: relative };
+    if (observedContentSha256 !== undefined && observedContentSha256 !== null && !/^[0-9a-f]{64}$/.test(observedContentSha256)) {
+      throw new Error("S7-B coordinator observed content version is invalid");
+    }
     const intent = await this.invokeCoordinatorBound({ action: "declare_intent", context, resources: [resource] }, context);
     assertCoordinatorResult(intent, "declare_intent");
-    const observation = this.coordinatorSnapshot(record, target);
-    const observed = await this.invokeCoordinatorBound({ action: "observe_resource", context, path: relative, observation }, context);
-    assertCoordinatorResult(observed, "observe_resource");
+    if (observedContentSha256 !== undefined) {
+      const observation = this.coordinatorSnapshot(record, target, { contentSha256: observedContentSha256, contentProvided: true });
+      const observed = await this.invokeCoordinatorBound({ action: "observe_resource", context, path: relative, observation }, context);
+      assertCoordinatorResult(observed, "observe_resource");
+    }
 
     const exclusive = relative !== "HANDOFF.md";
     let claim = null;
@@ -244,6 +249,42 @@ export class S6GitHubBroker {
     };
   }
 
+  /**
+   * Host-side observation seam for read_file.  The container supplies only a
+   * bounded content digest obtained from the bytes it returned; repository and
+   * store authority remains controller-owned here.
+   */
+  async coordinateObservation({ path: repositoryRelativePath, contentSha256 } = {}) {
+    const relative = assertCoordinatorRelativePath(repositoryRelativePath);
+    if (contentSha256 !== null && !/^[0-9a-f]{64}$/.test(String(contentSha256 || ""))) {
+      throw new Error("S7-B coordinator observed content version is invalid");
+    }
+    const record = this.validateRegisteredWorkspaceRecord();
+    this.validateManagerGovernance(record);
+    this.validateWorkspaceIdentity(record.workspacePath, record.branch, { requireClean: false });
+    const target = path.resolve(record.workspacePath, relative);
+    if (!isWithin(target, record.workspacePath) || target === record.workspacePath) throw new Error("S7-B coordinator target escaped the registered workspace");
+    ensureNoSymlinkAncestors(path.dirname(target));
+    if (fs.existsSync(target)) {
+      const targetStat = fs.lstatSync(target);
+      if (targetStat.isSymbolicLink() || !targetStat.isFile()) throw new Error("S7-B coordinator target is not a regular file");
+    }
+    const context = this.coordinatorContext(record);
+    await this.ensureCoordinatorSession(context);
+    const observation = this.coordinatorSnapshot(record, target, { contentSha256, contentProvided: true });
+    const observed = await this.invokeCoordinatorBound({ action: "observe_resource", context, path: relative, observation }, context);
+    assertCoordinatorResult(observed, "observe_resource");
+    return {
+      allowed: true,
+      decision: observed.decision,
+      reason_code: observed.reason_code,
+      freshness: observed.freshness || null,
+      store_health: observed.store_health || null,
+      evidence_refs: observed.evidence_refs || [],
+      lifecycle: { session_id: context.session_id, path: relative, operation: "observe_resource" },
+    };
+  }
+
   coordinatorContext(record) {
     const commonDir = this.gitOutput(["rev-parse", "--git-common-dir"], record.workspacePath).trim();
     const instance = `sha256:${crypto.createHash("sha256").update(`s7b-local-repository-instance-v1\0${commonDir}`).digest("hex")}`;
@@ -261,7 +302,7 @@ export class S6GitHubBroker {
     };
   }
 
-  coordinatorSnapshot(record, target) {
+  coordinatorSnapshot(record, target, { contentSha256 = undefined, contentProvided = false } = {}) {
     const present = (hex, algorithm = "sha1") => ({ state: "present", algorithm, hex });
     const head = this.gitOutput(["rev-parse", "HEAD"], record.workspacePath).trim();
     assertSha(head, "S7-B coordinator HEAD");
@@ -275,7 +316,9 @@ export class S6GitHubBroker {
     });
     const uniqueIndexEntries = [...new Map(indexEntries.map((entry) => [JSON.stringify(entry), entry])).values()];
     let content = { state: "absent" };
-    if (fs.existsSync(target)) content = { state: "present", algorithm: "sha256", hex: sha256(target) };
+    if (contentProvided) {
+      if (contentSha256 !== null) content = { state: "present", algorithm: "sha256", hex: contentSha256 };
+    } else if (fs.existsSync(target)) content = { state: "present", algorithm: "sha256", hex: sha256(target) };
     return {
       head_oid: head ? present(head) : { state: "absent" },
       index_entries: uniqueIndexEntries,
@@ -290,9 +333,14 @@ export class S6GitHubBroker {
     const binding = this.coordinatorBinding();
     const marker = readCoordinatorMarker(this.coordinatorMarkerPath);
     if (marker) {
-      if (marker.session_id !== context.session_id || marker.store_sha256 !== sha256(binding.store) || marker.artifact_sha256 !== binding.artifact || marker.repository_id !== S7B_REPOSITORY_ID || marker.registered !== true || marker.attested !== true) {
+      if (marker.session_id !== context.session_id || marker.store_identity !== binding.identity || marker.store_generation !== binding.generation || marker.boot_identity !== binding.bootIdentity || marker.artifact_sha256 !== binding.artifact || marker.repository_id !== S7B_REPOSITORY_ID || marker.registered !== true || marker.attested !== true) {
         throw new Error("S7-B coordinator session marker does not match the selected durable binding");
       }
+      // Attestation is deliberately repeated as the authoritative session
+      // existence check; a marker alone cannot make a deleted/corrupt session
+      // valid after a broker restart.
+      const attested = await this.invokeCoordinatorBound({ action: "attest_capabilities", context }, context);
+      assertCoordinatorResult(attested, "attest_capabilities");
       return;
     }
     const registered = await this.invokeCoordinator({ action: "register_session", context });
@@ -300,11 +348,13 @@ export class S6GitHubBroker {
     const attested = await this.invokeCoordinator({ action: "attest_capabilities", context });
     assertCoordinatorResult(attested, "attest_capabilities");
     atomicWrite(this.coordinatorMarkerPath, {
-      version: 1,
+      version: 2,
       kind: "s7b-coordinator-session",
       session_id: context.session_id,
       repository_id: S7B_REPOSITORY_ID,
-      store_sha256: sha256(binding.store),
+      store_identity: binding.identity,
+      store_generation: binding.generation,
+      boot_identity: binding.bootIdentity,
       artifact_sha256: binding.artifact,
       registered: true,
       attested: true,
@@ -314,12 +364,11 @@ export class S6GitHubBroker {
 
   refreshCoordinatorMarker(context, binding) {
     const marker = readCoordinatorMarker(this.coordinatorMarkerPath);
-    if (!marker || marker.session_id !== context.session_id || marker.artifact_sha256 !== binding.artifact || marker.repository_id !== S7B_REPOSITORY_ID) {
+    if (!marker || marker.session_id !== context.session_id || marker.store_identity !== binding.identity || marker.store_generation !== binding.generation || marker.boot_identity !== binding.bootIdentity || marker.artifact_sha256 !== binding.artifact || marker.repository_id !== S7B_REPOSITORY_ID || marker.registered !== true || marker.attested !== true) {
       throw new Error("S7-B coordinator store changed while handling the mutation");
     }
     atomicWrite(this.coordinatorMarkerPath, {
       ...marker,
-      store_sha256: sha256(binding.store),
       updated_at: new Date().toISOString(),
     });
   }
@@ -327,7 +376,7 @@ export class S6GitHubBroker {
   async invokeCoordinatorBound(request, context) {
     const binding = this.coordinatorBinding();
     const marker = readCoordinatorMarker(this.coordinatorMarkerPath);
-    if (!marker || marker.session_id !== context.session_id || marker.store_sha256 !== sha256(binding.store)) {
+    if (!marker || marker.session_id !== context.session_id || marker.store_identity !== binding.identity || marker.store_generation !== binding.generation || marker.boot_identity !== binding.bootIdentity || marker.artifact_sha256 !== binding.artifact || marker.repository_id !== S7B_REPOSITORY_ID || marker.registered !== true || marker.attested !== true) {
       throw new Error("S7-B coordinator store changed before the mutation check");
     }
     const result = await this.invokeCoordinator(request);
@@ -336,11 +385,24 @@ export class S6GitHubBroker {
   }
 
   coordinatorBinding() {
-    const store = this.coordinatorValue("S7B_COORDINATOR_STORE");
+    const selected = this.coordinatorValue("S7B_COORDINATOR_STORE");
     const artifact = this.coordinatorValue("S7B_COORDINATOR_ARTIFACT_SHA256");
-    if (!path.isAbsolute(store) || !fs.existsSync(store) || !fs.lstatSync(store).isFile()) throw new Error("S7-B selected coordinator store is unavailable");
+    const store = path.resolve(selected);
+    if (store !== selected || !path.isAbsolute(store) || !fs.existsSync(store)) throw new Error("S7-B selected coordinator store is unavailable");
+    ensureNoSymlinkAncestors(path.dirname(store));
+    const storeStat = fs.lstatSync(store);
+    if (!storeStat.isFile() || storeStat.isSymbolicLink() || (storeStat.mode & 0o077) !== 0 || (typeof process.getuid === "function" && storeStat.uid !== process.getuid())) throw new Error("S7-B selected coordinator store is unsafe");
+    const parentStat = fs.lstatSync(path.dirname(store));
+    if (!parentStat.isDirectory() || parentStat.isSymbolicLink() || (parentStat.mode & 0o077) !== 0 || (typeof process.getuid === "function" && parentStat.uid !== process.getuid())) throw new Error("S7-B selected coordinator store parent is unsafe");
     if (!/^[0-9a-f]{64}$/.test(artifact) || artifact !== S7B_ARTIFACT_SHA256) throw new Error("S7-B coordinator artifact binding is invalid");
-    return { store, artifact };
+    const generation = this.coordinatorInteger("S7B_COORDINATOR_SAFETY_GENERATION");
+    const bootIdentity = this.coordinatorValue("S7B_COORDINATOR_BOOT_IDENTITY");
+    const identityMaterial = [
+      "s7b-selected-store-v2", store, String(storeStat.dev), String(storeStat.ino),
+      Number.isFinite(storeStat.birthtimeMs) ? String(storeStat.birthtimeMs) : "unknown",
+    ].join("\0");
+    const identity = `sha256:${crypto.createHash("sha256").update(identityMaterial).digest("hex")}`;
+    return { store, artifact, identity, generation, bootIdentity };
   }
 
   coordinatorValue(name) {
@@ -923,9 +985,16 @@ export async function dispatchS6BrokerRequest(broker, authState, request) {
     return broker.publishBranch();
   }
   if (request.operation === "coordinate-mutation") {
-    if (Object.keys(request).sort().join(",") !== "capability,operation,path,route") throw new Error("S7-B coordinator request accepts only a covered route and path");
+    const keys = Object.keys(request).sort().join(",");
+    if (keys !== "capability,operation,path,route" && keys !== "capability,observed_content_sha256,operation,path,route") throw new Error("S7-B coordinator request accepts only a covered route and path (optional observed content version)");
     if (!S7B_COORDINATED_ROUTES.has(request.route)) throw new Error("S7-B coordinator route is invalid");
-    return broker.coordinateMutation({ route: request.route, path: assertCoordinatorRelativePath(request.path) });
+    if (Object.hasOwn(request, "observed_content_sha256") && request.observed_content_sha256 !== null && !/^[0-9a-f]{64}$/.test(String(request.observed_content_sha256 || ""))) throw new Error("S7-B coordinator observed content version is invalid");
+    return broker.coordinateMutation({ route: request.route, path: assertCoordinatorRelativePath(request.path), ...(Object.hasOwn(request, "observed_content_sha256") ? { observedContentSha256: request.observed_content_sha256 } : {}) });
+  }
+  if (request.operation === "coordinate-observe") {
+    if (Object.keys(request).sort().join(",") !== "capability,content_sha256,operation,path") throw new Error("S7-B observation request accepts only a path and content version");
+    if (request.content_sha256 !== null && !/^[0-9a-f]{64}$/.test(String(request.content_sha256 || ""))) throw new Error("S7-B coordinator observed content version is invalid");
+    return broker.coordinateObservation({ path: assertCoordinatorRelativePath(request.path), contentSha256: request.content_sha256 });
   }
   throw new Error("unsupported S6 broker operation");
 }
@@ -1064,7 +1133,7 @@ function readCoordinatorMarker(filePath) {
     throw new Error("S7-B coordinator session marker is not owner-only");
   }
   const value = readJson(filePath);
-  if (!value || value.version !== 1 || value.kind !== "s7b-coordinator-session") throw new Error("S7-B coordinator session marker is invalid");
+  if (!value || value.version !== 2 || value.kind !== "s7b-coordinator-session") throw new Error("S7-B coordinator session marker is invalid");
   return value;
 }
 

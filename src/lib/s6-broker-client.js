@@ -46,12 +46,25 @@ export function s6BrokerPublishBranch() {
   return requestBroker({ operation: "publish" });
 }
 
-export function s6BrokerCoordinateMutation(route, repositoryRelativePath) {
+export function s6BrokerCoordinateMutation(route, repositoryRelativePath, observedContentSha256 = undefined) {
   if (!COORDINATED_ROUTES.has(route)) throw new Error("S7-B coordinator route is not covered by the Bridge adapter");
   if (typeof repositoryRelativePath !== "string" || !RELATIVE_PATH.test(repositoryRelativePath)) {
     throw new Error("S7-B coordinator path must be a normalized repository-relative path");
   }
-  return requestBroker({ operation: "coordinate-mutation", route, path: repositoryRelativePath });
+  if (observedContentSha256 !== undefined && observedContentSha256 !== null && !/^[0-9a-f]{64}$/.test(observedContentSha256)) {
+    throw new Error("S7-B coordinator observed content version is invalid");
+  }
+  return requestBroker({ operation: "coordinate-mutation", route, path: repositoryRelativePath, ...(observedContentSha256 !== undefined ? { observedContentSha256 } : {}) });
+}
+
+export function s6BrokerObserveResource(repositoryRelativePath, contentSha256) {
+  if (typeof repositoryRelativePath !== "string" || !RELATIVE_PATH.test(repositoryRelativePath)) {
+    throw new Error("S7-B coordinator path must be a normalized repository-relative path");
+  }
+  if (contentSha256 !== null && !/^[0-9a-f]{64}$/.test(String(contentSha256 || ""))) {
+    throw new Error("S7-B coordinator observed content version is invalid");
+  }
+  return requestBroker({ operation: "coordinate-observe", path: repositoryRelativePath, contentSha256 });
 }
 
 function requestBroker(request, { registration = false } = {}) {
@@ -67,17 +80,26 @@ function requestBroker(request, { registration = false } = {}) {
   if (!registration && request.operation === "preflight-commit" && requestKeys.join(",") !== "operation") throw new Error("invalid S6 commit preflight request");
   if (!registration && request.operation === "attest" && (requestKeys.join(",") !== "operation,sha" || !/^[0-9a-f]{40}$/.test(String(request.sha || "")))) throw new Error("invalid S6 attestation request");
   if (!registration && request.operation === "coordinate-mutation" && (
-    requestKeys.join(",") !== "operation,path,route"
+    (requestKeys.join(",") !== "operation,path,route" && requestKeys.join(",") !== "observedContentSha256,operation,path,route")
     || !COORDINATED_ROUTES.has(request.route)
     || typeof request.path !== "string"
     || !RELATIVE_PATH.test(request.path)
+    || (Object.hasOwn(request, "observedContentSha256") && request.observedContentSha256 !== null && !/^[0-9a-f]{64}$/.test(String(request.observedContentSha256 || "")))
   )) throw new Error("invalid S7-B coordinator request");
+  if (!registration && request.operation === "coordinate-observe" && (
+    requestKeys.join(",") !== "contentSha256,operation,path"
+    || typeof request.path !== "string"
+    || !RELATIVE_PATH.test(request.path)
+    || (request.contentSha256 !== null && !/^[0-9a-f]{64}$/.test(String(request.contentSha256 || "")))
+  )) throw new Error("invalid S7-B coordinator observation request");
   const body = JSON.stringify({
     capability,
     operation: request.operation,
     ...(request.sha ? { sha: request.sha } : {}),
     ...(request.route ? { route: request.route } : {}),
     ...(request.path ? { path: request.path } : {}),
+    ...(Object.hasOwn(request, "observedContentSha256") ? { observed_content_sha256: request.observedContentSha256 } : {}),
+    ...(Object.hasOwn(request, "contentSha256") ? { content_sha256: request.contentSha256 } : {}),
   });
   return new Promise((resolve, reject) => {
     let settled = false;

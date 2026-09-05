@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
@@ -20,8 +21,13 @@ test("S7-B structured mutation seam is a real pre-mutation coordinator gate", as
     const { coordinatorBeforeMutation } = await import("../../src/lib/coordinator-guard.js");
     assert.equal(typeof coordinatorBeforeMutation, "function");
     setS6BrokerRequestForTests((request) => {
-      calls.push({ ...request, observedBeforeWrite: fs.existsSync(path.join(root, request.path)) ? fs.readFileSync(path.join(root, request.path), "utf8") : null });
-      return { decision: "ALLOW", reason_code: "WORK_ALLOWED" };
+      const target = path.join(root, request.path);
+      const observedBeforeWrite = fs.existsSync(target) ? fs.readFileSync(target, "utf8") : null;
+      calls.push({ ...request, observedBeforeWrite });
+      const current = observedBeforeWrite === null
+        ? { state: "absent" }
+        : { state: "present", algorithm: "sha256", hex: crypto.createHash("sha256").update(observedBeforeWrite).digest("hex") };
+      return { decision: "ALLOW", reason_code: "WORK_ALLOWED", freshness: { current: { worktree_content_version: current } } };
     });
 
     const { registerFiles } = await import("../../src/tools/files.js");
