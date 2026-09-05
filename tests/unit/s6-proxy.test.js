@@ -39,6 +39,48 @@ test("S6 networkless channel proxy returns a host response after the client half
   }
 });
 
+test("S6 networkless channel proxy carries a bounded Bridge mutation projection after the client half-closes", async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "s6-channel-proxy-mutation-test-"));
+  const socketPath = path.join(base, "broker.sock");
+  const child = spawn(process.execPath, [path.join(repo, "scripts", "s6-broker-channel-proxy.mjs"), "--socket", socketPath], {
+    cwd: repo,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const projection = {
+    bridge_projection: "s7b-mutation-result-v1",
+    allowed: true,
+    decision: "ALLOW",
+    reason_code: "WORK_ALLOWED",
+    freshness: { current: { worktree_content_version: { state: "present", algorithm: "sha256", hex: "a".repeat(64) } } },
+    enforcement: null,
+    store_health: { status: "healthy" },
+    evidence_refs: ["event:fixture"],
+    lifecycle: { session_id: "s6-proxy-0123456789abcdef", route: "write_file", path: "HANDOFF.md", exclusive: false },
+  };
+  try {
+    assert.ok(Buffer.byteLength(JSON.stringify(projection)) <= 16 * 1024);
+    await waitForLine(child.stderr, "S6_PROXY_READY");
+    const proxyLine = waitForJsonLine(child.stdout);
+    const response = new Promise((resolve, reject) => {
+      let output = "";
+      const socket = net.createConnection({ path: socketPath });
+      socket.setEncoding("utf8");
+      socket.on("connect", () => socket.end(`${JSON.stringify({ operation: "coordinate-mutation", capability: "a".repeat(64), route: "write_file", path: "HANDOFF.md" })}\n`));
+      socket.on("data", (chunk) => { output += chunk; });
+      socket.on("error", reject);
+      socket.on("close", () => resolve(output));
+    });
+    const envelope = await proxyLine;
+    assert.equal(envelope.request.operation, "coordinate-mutation");
+    child.stdin.write(`${JSON.stringify({ id: envelope.id, response: projection })}\n`);
+    assert.equal(await response, `${JSON.stringify(projection)}\n`);
+  } finally {
+    child.kill("SIGTERM");
+    await new Promise((resolve) => child.once("exit", resolve));
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
 function waitForLine(stream, expected) {
   return new Promise((resolve, reject) => {
     const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });

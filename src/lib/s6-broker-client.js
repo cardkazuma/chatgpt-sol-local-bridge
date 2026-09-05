@@ -9,6 +9,25 @@ let testBrokerRequest = null;
 
 const COORDINATED_ROUTES = new Set(["write_file", "edit_file", "apply_patch"]);
 const RELATIVE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.\/?)(?!.*(?:^|\/)\.(?:\/|$))(?!.*\/\/)[^\0]+$/;
+export const S6_BROKER_RESPONSE_MAX_BYTES = 128 * 1024;
+
+/**
+ * Parse one complete broker frame only.  The caller retains partial input
+ * until a newline arrives; an oversized frame is a fail-closed channel error,
+ * never a reason to accept truncated JSON or wait for a misleading close.
+ */
+export function consumeS6BrokerResponse(response) {
+  if (Buffer.byteLength(response) > S6_BROKER_RESPONSE_MAX_BYTES) {
+    throw new Error("S6 broker response exceeded bounded response limit");
+  }
+  const newline = response.indexOf("\n");
+  if (newline < 0) return null;
+  try {
+    return JSON.parse(response.slice(0, newline));
+  } catch {
+    throw new Error("S6 broker returned malformed evidence");
+  }
+}
 
 export function s6BrokerConfigured() {
   return Boolean(testBrokerRequest || (process.env.S6_BROKER_SOCKET && brokerRegistered));
@@ -116,9 +135,9 @@ function requestBroker(request, { registration = false } = {}) {
     socket.on("connect", () => socket.end(`${body}\n`));
     socket.on("data", (chunk) => {
       response += chunk;
-      if (Buffer.byteLength(response) > 128 * 1024 || !response.includes("\n")) return;
       let parsed;
-      try { parsed = JSON.parse(response.slice(0, response.indexOf("\n"))); } catch { return finish(new Error("S6 broker returned malformed evidence")); }
+      try { parsed = consumeS6BrokerResponse(response); } catch (error) { return finish(error); }
+      if (parsed === null) return;
       if (parsed?.error) return finish(new Error(String(parsed.error)));
       finish(null, parsed);
     });

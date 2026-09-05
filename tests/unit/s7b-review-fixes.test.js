@@ -225,6 +225,48 @@ test("R2 real handlers preserve the original observation across stale writes, pa
 
 });
 
+test("S7-B projects a real oversized coordinator mutation decision below the bounded broker response limit", async () => {
+  const fixture = await createFixture({ extraTrackedEntries: 1_200 });
+  const prior = captureEnvironment([
+    "S7B_COORDINATOR_PYTHON", "S7B_COORDINATOR_DRIVER", "S7B_COORDINATOR_STORE",
+    "S7B_COORDINATOR_BOOT_IDENTITY", "S7B_COORDINATOR_SAFETY_GENERATION",
+    "S7B_COORDINATOR_REPOSITORY_ID", "S7B_COORDINATOR_ARTIFACT_SHA256",
+  ]);
+  try {
+    configureCoordinator(fixture);
+    let completeCheck = null;
+    const invokeCoordinatorBound = fixture.brokerA.invokeCoordinatorBound.bind(fixture.brokerA);
+    fixture.brokerA.invokeCoordinatorBound = async (request, context) => {
+      const result = await invokeCoordinatorBound(request, context);
+      if (request.action === "check_before_mutation") completeCheck = result;
+      return result;
+    };
+    await fixture.brokerA.coordinateObservation({ path: "HANDOFF.md", contentSha256: contentSha256("v1\n") });
+    const projected = await fixture.brokerA.coordinateMutation({ route: "edit_file", path: "HANDOFF.md", observedContentSha256: contentSha256("v1\n") });
+    const unprojectedResponse = {
+      allowed: true,
+      decision: completeCheck.decision,
+      reason_code: completeCheck.reason_code,
+      freshness: completeCheck.freshness || null,
+      enforcement: completeCheck.enforcement || null,
+      store_health: completeCheck.store_health || null,
+      evidence_refs: completeCheck.evidence_refs || [],
+      lifecycle: { session_id: fixture.sessionA.sessionId, route: "edit_file", path: "HANDOFF.md", exclusive: false },
+    };
+    const fullBytes = Buffer.byteLength(JSON.stringify(unprojectedResponse));
+    assert.ok(fullBytes > 128 * 1024, `actual complete coordinator result must exceed the client limit (got ${fullBytes})`);
+    assert.equal(projected.bridge_projection, "s7b-mutation-result-v1");
+    assert.equal(projected.decision, "ALLOW");
+    assert.equal(projected.reason_code, completeCheck.reason_code);
+    assert.deepEqual(projected.freshness.current.worktree_content_version, completeCheck.freshness.current.worktree_content_version);
+    assert.equal(Object.hasOwn(projected.freshness.current, "index_entries"), false, "the Bridge must not receive the repository-wide index");
+    assert.ok(Buffer.byteLength(JSON.stringify(projected)) <= 16 * 1024, "normal Bridge mutation response must retain a small documented bound");
+  } finally {
+    restoreEnvironment(prior);
+    fixture.cleanup();
+  }
+});
+
 function handoffPatch(oldValue, newValue, otherValue) {
   return [
     "diff --git a/HANDOFF.md b/HANDOFF.md",
@@ -238,14 +280,14 @@ function handoffPatch(oldValue, newValue, otherValue) {
   ].join("\n");
 }
 
-async function createFixture() {
+async function createFixture({ extraTrackedEntries = 0 } = {}) {
   ({ DisposableWorkspaceManager } = await import("../../scripts/disposable-workspace.mjs"));
   ({ S6GitHubBroker, S6_REPOSITORY_URL, S6_GOVERNANCE_HOOKS_PATH, S6_GOVERNANCE_POLICY_PATH, S6_CANONICAL_PLACEHOLDER_PATHS } = await import("../../scripts/s6-github-broker.mjs"));
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "s7b-review-fix-"));
   const source = path.join(root, "source");
   const managerRoot = path.join(root, "chatgpt-local-bridge-s6-review-fix-manager");
   fs.mkdirSync(managerRoot, { recursive: true, mode: 0o700 });
-  createSource(source);
+  createSource(source, extraTrackedEntries);
   const store = path.join(root, "coordinator.sqlite3");
   const python = provisionedCoordinatorPython();
   const driver = path.join(REPO_ROOT, "scripts", "s7b-coordinator-driver.py");
@@ -330,7 +372,7 @@ function provisionedCoordinatorPython() {
   return python;
 }
 
-function createSource(source) {
+function createSource(source, extraTrackedEntries = 0) {
   const files = {
     ".gitignore": "/runtime/\n*.log\n.env\n",
     "README.md": "S7-B review fixture\n",
@@ -344,6 +386,12 @@ function createSource(source) {
     fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
     fs.writeFileSync(target, content, { mode: 0o600 });
   }
+  for (let index = 0; index < extraTrackedEntries; index += 1) {
+    const relative = `docs/oversized-index/${String(index).padStart(4, "0")}.txt`;
+    const target = path.join(source, relative);
+    fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(target, `distinct coordinator index fixture ${index}\n`, { mode: 0o600 });
+  }
   fs.mkdirSync(path.join(source, ".githooks"), { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(source, ".githooks", "commit-msg"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   const env = { ...process.env, HOME: path.join(source, "git-home"), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
@@ -351,7 +399,7 @@ function createSource(source) {
   runGit(["config", "core.hooksPath", "/dev/null"], source, env);
   runGit(["config", "user.name", "S7-B review source"], source, env);
   runGit(["config", "user.email", "s7b-review-source@example.invalid"], source, env);
-  runGit(["add", "--", ".gitignore", "README.md", "HANDOFF.md", "docs/notes.md", "package.json", "paperless/secrets/decrypt-passwords.txt.example", ".githooks/commit-msg"], source, env);
+  runGit(["add", "--all"], source, env);
   runGit(["commit", "--no-verify", "-qm", "S7-B review fixture baseline"], source, env);
 }
 

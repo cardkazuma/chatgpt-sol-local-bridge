@@ -38,6 +38,10 @@ const S7B_COORDINATED_ROUTES = new Set(["write_file", "edit_file", "apply_patch"
 const S7B_REPOSITORY_ID = 1297989453;
 const S7B_ARTIFACT_SHA256 = "3e528011ce130797af25aeca2f1bb1faea294cd46838cfbadffc488cd9463f96";
 const S7B_COORDINATOR_DRIVER = "s7b-coordinator-driver.py";
+// This is deliberately far below the contained client's 128 KiB framing
+// limit. It is the maximum serialized host-to-container projection, not a
+// limit on authoritative coordinator/audit evidence in the selected store.
+export const S7B_BRIDGE_MUTATION_RESPONSE_MAX_BYTES = 16 * 1024;
 
 export function assertS6RepositoryAlias(alias = S6_REPOSITORY_ALIAS) {
   if (alias !== S6_REPOSITORY_ALIAS) throw new Error("S6 supports only the homelab repository alias");
@@ -67,6 +71,87 @@ export function s6BrokerSocketPath(managerRoot, sessionId) {
   // bridge container. The short hashed component stays within macOS sockaddr
   // limits; the broker capability and fixed protocol remain the authority.
   return path.join(path.resolve(managerRoot), `b${suffix.slice(0, 10)}`, "publish.sock");
+}
+
+/**
+ * Produce the explicitly non-authoritative mutation result consumed by the
+ * contained Bridge. The complete coordinator result, including repository
+ * snapshots and audit evidence, remains authoritative only in the host-owned
+ * selected store. Do not add repository-wide evidence to this projection.
+ */
+export function projectS7BBridgeMutationResult(result) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    throw new Error("S7-B coordinator mutation result is invalid for Bridge projection");
+  }
+  const projected = {
+    bridge_projection: "s7b-mutation-result-v1",
+    allowed: result.allowed === true,
+    decision: boundedDecision(result.decision),
+    reason_code: boundedBridgeString(result.reason_code, "S7-B coordinator reason code", 128),
+    freshness: projectBridgeFreshness(result.freshness),
+    enforcement: projectBridgeMetadata(result.enforcement),
+    store_health: projectBridgeMetadata(result.store_health),
+    evidence_refs: projectBridgeEvidenceRefs(result.evidence_refs),
+    lifecycle: projectBridgeLifecycle(result.lifecycle),
+  };
+  if (Buffer.byteLength(JSON.stringify(projected)) > S7B_BRIDGE_MUTATION_RESPONSE_MAX_BYTES) {
+    throw new Error("S7-B Bridge mutation projection exceeded its bounded response limit");
+  }
+  return projected;
+}
+
+function boundedDecision(value) {
+  if (!["ALLOW", "WARN", "REFRESH", "BLOCK", "UNAVAILABLE"].includes(value)) {
+    throw new Error("S7-B coordinator mutation decision is invalid for Bridge projection");
+  }
+  return value;
+}
+
+function boundedBridgeString(value, label, maximum) {
+  if (typeof value !== "string" || !value || Buffer.byteLength(value) > maximum) {
+    throw new Error(`${label} is invalid for Bridge projection`);
+  }
+  return value;
+}
+
+function projectBridgeFreshness(freshness) {
+  const version = freshness?.current?.worktree_content_version;
+  if (!version || typeof version !== "object" || Array.isArray(version)) return null;
+  if (version.state === "absent" && Object.keys(version).length === 1) {
+    return { current: { worktree_content_version: { state: "absent" } } };
+  }
+  if (version.state === "present" && version.algorithm === "sha256" && /^[0-9a-f]{64}$/.test(String(version.hex || ""))) {
+    return { current: { worktree_content_version: { state: "present", algorithm: "sha256", hex: version.hex } } };
+  }
+  return null;
+}
+
+function projectBridgeMetadata(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const projected = {};
+  for (const [key, item] of Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).slice(0, 16)) {
+    if (!/^[a-z][a-z0-9_]{0,63}$/.test(key)) continue;
+    if (typeof item === "boolean" || (typeof item === "number" && Number.isSafeInteger(item))) projected[key] = item;
+    else if (typeof item === "string" && item.length > 0 && Buffer.byteLength(item) <= 256) projected[key] = item;
+  }
+  return Object.keys(projected).length > 0 ? projected : null;
+}
+
+function projectBridgeEvidenceRefs(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 16).map((reference) => boundedBridgeString(reference, "S7-B coordinator evidence reference", 256));
+}
+
+function projectBridgeLifecycle(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("S7-B coordinator lifecycle metadata is invalid for Bridge projection");
+  }
+  return {
+    session_id: boundedBridgeString(value.session_id, "S7-B coordinator session identity", 128),
+    route: boundedBridgeString(value.route, "S7-B coordinator route", 32),
+    path: boundedBridgeString(value.path, "S7-B coordinator path", 4096),
+    exclusive: value.exclusive === true,
+  };
 }
 
 export class S6GitHubBroker {
@@ -271,7 +356,7 @@ export class S6GitHubBroker {
       };
     }
     const allowed = ["ALLOW", "WARN"].includes(checked.decision);
-    return {
+    return projectS7BBridgeMutationResult({
       allowed,
       decision: checked.decision,
       reason_code: checked.reason_code,
@@ -280,7 +365,7 @@ export class S6GitHubBroker {
       store_health: checked.store_health || null,
       evidence_refs: checked.evidence_refs || [],
       lifecycle: { session_id: context.session_id, route, path: relative, exclusive },
-    };
+    });
   }
 
   /**
