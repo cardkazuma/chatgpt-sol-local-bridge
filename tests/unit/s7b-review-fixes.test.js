@@ -10,6 +10,9 @@ const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), 
 const ARTIFACT_SHA256 = "3e528011ce130797af25aeca2f1bb1faea294cd46838cfbadffc488cd9463f96";
 const REPOSITORY_ID = "1297989453";
 const TEST_STATE_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-s7b-review-state-"));
+const TEST_HOME_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-s7b-review-home-"));
+process.env.HOME = TEST_HOME_ROOT;
+process.env.XDG_CONFIG_HOME = path.join(TEST_HOME_ROOT, "config");
 process.env.BRIDGE_STATE_DIR = TEST_STATE_ROOT;
 process.env.BRIDGE_SCRATCH_DIR = path.join(TEST_STATE_ROOT, "scratch");
 let DisposableWorkspaceManager;
@@ -28,9 +31,11 @@ test("R1 shared selected-store binding survives another session's normal broker 
   ]);
   try {
     configureCoordinator(fixture);
+    await fixture.brokerA.coordinateObservation({ path: "HANDOFF.md", contentSha256: contentSha256("v1\n") });
     const first = await fixture.brokerA.coordinateMutation({ route: "edit_file", path: "HANDOFF.md", observedContentSha256: contentSha256("v1\n") });
     assert.equal(first.decision, "ALLOW");
 
+    await fixture.brokerB.coordinateObservation({ path: "HANDOFF.md", contentSha256: contentSha256("v1\n") });
     const second = await fixture.brokerB.coordinateMutation({ route: "edit_file", path: "HANDOFF.md", observedContentSha256: contentSha256("v1\n") });
     assert.equal(second.decision, "ALLOW");
 
@@ -46,7 +51,7 @@ test("R1 shared selected-store binding survives another session's normal broker 
   }
 });
 
-test("R2 real handlers preserve content freshness across stale write, pending edit, and reread", async () => {
+test("R2 real handlers preserve the original observation across stale writes, patches, refs, missing reads, and rereads", async () => {
   const fixture = await createFixture();
   const prior = captureEnvironment([
     "BRIDGE_GOVERNANCE_MODE", "DEFAULT_WORKSPACE", "WORKSPACE_ROOTS", "BRIDGE_STATE_DIR", "BRIDGE_SCRATCH_DIR",
@@ -62,7 +67,7 @@ test("R2 real handlers preserve content freshness across stale write, pending ed
     process.env.BRIDGE_GOVERNANCE_MODE = "s6";
     process.env.BRIDGE_STATE_DIR = path.join(fixture.root, "bridge-state");
     process.env.BRIDGE_SCRATCH_DIR = path.join(fixture.root, "bridge-scratch");
-    process.env.WORKSPACE_ROOTS = [fixture.sessionA.workspacePath, fixture.sessionB.workspacePath].join(path.delimiter);
+    process.env.WORKSPACE_ROOTS = [fixture.sessionA.workspacePath, fixture.sessionB.workspacePath, fixture.sessionC.workspacePath].join(path.delimiter);
     process.env.S7B_COORDINATOR_PYTHON = fixture.python;
     process.env.S7B_COORDINATOR_DRIVER = fixture.driver;
     process.env.S7B_COORDINATOR_STORE = fixture.store;
@@ -78,11 +83,11 @@ test("R2 real handlers preserve content freshness across stale write, pending ed
     const { setS6BrokerRequestForTests } = await import("../../src/lib/s6-broker-client.js");
     const setActive = (which) => {
       active = which;
-      process.env.DEFAULT_WORKSPACE = which === "A" ? fixture.sessionA.workspacePath : fixture.sessionB.workspacePath;
+      process.env.DEFAULT_WORKSPACE = fixture[`session${which}`].workspacePath;
     };
     const call = (name, args) => handlers.get(name)(args);
     pendingRequest = async (value) => {
-      const broker = active === "A" ? fixture.brokerA : fixture.brokerB;
+      const broker = fixture[`broker${active}`];
       if (value.operation === "coordinate-mutation" && value.route === "edit_file" && delayNextEdit) {
         delayNextEdit = false;
         setActive("B");
@@ -124,6 +129,79 @@ test("R2 real handlers preserve content freshness across stale write, pending ed
     assert.match(staleWrite.content[0].text, /STALE_OBSERVATION|REFRESH/);
     assert.equal(fs.readFileSync(fileA, "utf8"), "v2\n", "stale write must preserve B's content");
 
+    // B changes only the second line before A enters edit_file. The oldText
+    // still matches, so refreshing the observation from the write-time bytes
+    // would incorrectly authorize a lost update.
+    fs.writeFileSync(fileA, "value=one\nother=one\n", { mode: 0o600 });
+    fs.writeFileSync(fileB, "value=one\nother=one\n", { mode: 0o600 });
+    setActive("A");
+    assert.equal((await call("read_file", { path: fileA })).isError, undefined);
+    setActive("B");
+    assert.equal((await call("read_file", { path: fileB })).isError, undefined);
+    const bEdit = await call("write_file", { path: fileB, content: "value=one\nother=two\n" });
+    assert.equal(bEdit.isError, undefined, bEdit.content?.[0]?.text);
+    fs.writeFileSync(fileA, "value=one\nother=two\n", { mode: 0o600 });
+    setActive("A");
+    const staleEdit = await call("edit_file", { path: fileA, oldText: "value=one", newText: "value=A" });
+    assert.equal(staleEdit.isError, true);
+    assert.match(staleEdit.content[0].text, /STALE_OBSERVATION|REFRESH/);
+    assert.equal(fs.readFileSync(fileA, "utf8"), "value=one\nother=two\n", "stale edit must preserve B's content");
+
+    // apply_patch must preserve the same original observation even though
+    // git apply --check and target hashing happen before the broker request.
+    fs.writeFileSync(fileA, "value=one\nother=one\n", { mode: 0o600 });
+    fs.writeFileSync(fileB, "value=one\nother=one\n", { mode: 0o600 });
+    setActive("A");
+    assert.equal((await call("read_file", { path: fileA })).isError, undefined);
+    setActive("B");
+    assert.equal((await call("read_file", { path: fileB })).isError, undefined);
+    const bPatchWrite = await call("write_file", { path: fileB, content: "value=one\nother=two\n" });
+    assert.equal(bPatchWrite.isError, undefined, bPatchWrite.content?.[0]?.text);
+    fs.writeFileSync(fileA, "value=one\nother=two\n", { mode: 0o600 });
+    setActive("A");
+    const stalePatch = await call("apply_patch", { cwd: fixture.sessionA.workspacePath, diff: handoffPatch("value=one", "value=A", "two") });
+    assert.equal(stalePatch.isError, true);
+    assert.match(stalePatch.content[0].text, /STALE_OBSERVATION|REFRESH/);
+    assert.equal(fs.readFileSync(fileA, "utf8"), "value=one\nother=two\n", "stale patch must preserve B's content");
+
+    // Explicit reread establishes the new baseline and permits a valid patch.
+    const refreshed = await call("read_file", { path: fileA });
+    assert.equal(refreshed.isError, undefined, refreshed.content?.[0]?.text);
+    const validPatch = await call("apply_patch", { cwd: fixture.sessionA.workspacePath, diff: handoffPatch("value=one", "value=patched", "two") });
+    assert.equal(validPatch.isError, undefined, validPatch.content?.[0]?.text);
+    assert.equal(fs.readFileSync(fileA, "utf8"), "value=patched\nother=two\n");
+
+    // HEAD movement is also in the freshness tuple, even when target bytes
+    // remain unchanged.
+    fs.writeFileSync(fileA, "value=one\n", { mode: 0o600 });
+    setActive("A");
+    assert.equal((await call("read_file", { path: fileA })).isError, undefined);
+    runGit(["commit", "--allow-empty", "--no-verify", "-qm", "S7-B review ref movement"], fixture.sessionA.workspacePath, {
+      ...process.env,
+      HOME: path.join(fixture.root, "git-home-ref-movement"),
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_TERMINAL_PROMPT: "0",
+    });
+    const staleRefEdit = await call("edit_file", { path: fileA, oldText: "value=one", newText: "value=ref-stale" });
+    assert.equal(staleRefEdit.isError, true);
+    assert.match(staleRefEdit.content[0].text, /STALE_OBSERVATION|REFRESH/);
+    assert.equal(fs.readFileSync(fileA, "utf8"), "value=one\n", "ref movement must not authorize a stale edit");
+    assert.equal((await call("read_file", { path: fileA })).isError, undefined);
+    const validRefEdit = await call("edit_file", { path: fileA, oldText: "value=one", newText: "value=refreshed" });
+    assert.equal(validRefEdit.isError, undefined, validRefEdit.content?.[0]?.text);
+    assert.equal(fs.readFileSync(fileA, "utf8"), "value=refreshed\n");
+
+    // C has an existing file but no task/read observation. Handler-entry
+    // bytes are not allowed to become synthetic read evidence.
+    setActive("C");
+    const missingRead = await call("edit_file", { path: fixture.sessionC.workspacePath + "/HANDOFF.md", oldText: "v1", newText: "C" });
+    assert.equal(missingRead.isError, true);
+    assert.match(missingRead.content[0].text, /STALE_OBSERVATION|REFRESH/);
+    assert.equal(fs.readFileSync(fixture.sessionC.workspacePath + "/HANDOFF.md", "utf8"), "v1\n", "missing observation must not write");
+
+    // Preserve the already-green pending-edit case: B changes the target
+    // while A's real handler is waiting in the broker request.
     fs.writeFileSync(fileA, "value=one\n", { mode: 0o600 });
     fs.writeFileSync(fileB, "value=one\n", { mode: 0o600 });
     setActive("A");
@@ -137,12 +215,6 @@ test("R2 real handlers preserve content freshness across stale write, pending ed
     assert.match(delayedEdit.content[0].text, /STALE_OBSERVATION|REFRESH/);
     assert.equal(fs.readFileSync(fileA, "utf8"), "value=two\n", "pending stale edit must not overwrite B");
 
-    const refreshed = await call("read_file", { path: fileA });
-    assert.equal(refreshed.isError, undefined, refreshed.content?.[0]?.text);
-    const validEdit = await call("edit_file", { path: fileA, oldText: "two", newText: "A2" });
-    assert.equal(validEdit.isError, undefined, validEdit.content?.[0]?.text);
-    assert.equal(fs.readFileSync(fileA, "utf8"), "value=A2\n");
-
     setS6BrokerRequestForTests(null);
   } finally {
     const { setS6BrokerRequestForTests } = await import("../../src/lib/s6-broker-client.js");
@@ -153,6 +225,19 @@ test("R2 real handlers preserve content freshness across stale write, pending ed
 
 });
 
+function handoffPatch(oldValue, newValue, otherValue) {
+  return [
+    "diff --git a/HANDOFF.md b/HANDOFF.md",
+    "--- a/HANDOFF.md",
+    "+++ b/HANDOFF.md",
+    "@@ -1,2 +1,2 @@",
+    `-${oldValue}`,
+    `+${newValue}`,
+    ` other=${otherValue}`,
+    "",
+  ].join("\n");
+}
+
 async function createFixture() {
   ({ DisposableWorkspaceManager } = await import("../../scripts/disposable-workspace.mjs"));
   ({ S6GitHubBroker, S6_REPOSITORY_URL, S6_GOVERNANCE_HOOKS_PATH, S6_GOVERNANCE_POLICY_PATH, S6_CANONICAL_PLACEHOLDER_PATHS } = await import("../../scripts/s6-github-broker.mjs"));
@@ -162,15 +247,22 @@ async function createFixture() {
   fs.mkdirSync(managerRoot, { recursive: true, mode: 0o700 });
   createSource(source);
   const store = path.join(root, "coordinator.sqlite3");
-  const configPath = path.join(os.homedir(), "Library", "Application Support", "ChatGPT Local Bridge", "s7b-coordinator.json");
-  const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-  const python = config.pythonExecutable;
+  const python = provisionedCoordinatorPython();
   const driver = path.join(REPO_ROOT, "scripts", "s7b-coordinator-driver.py");
   const init = spawnSync(python, ["-c", [
     "import sys",
     "from work_coordinator.infrastructure.storage.migration_runner import MigrationRunner",
     "MigrationRunner(sys.argv[1], busy_timeout_ms=5000, max_attempts=3).migrate()",
-  ].join("\n"), store], { encoding: "utf8", env: { ...process.env, PYTHONNOUSERSITE: "1" } });
+  ].join("\n"), store], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: TEST_HOME_ROOT,
+      XDG_CONFIG_HOME: path.join(TEST_HOME_ROOT, "config"),
+      PYTHONNOUSERSITE: "1",
+      PYTHONPATH: "",
+    },
+  });
   assert.equal(init.status, 0, init.stderr || init.stdout);
   fs.chmodSync(store, 0o600);
 
@@ -203,10 +295,39 @@ async function createFixture() {
   });
   const sessionA = manager.create();
   const sessionB = manager.create();
+  const sessionC = manager.create();
   const brokerA = makeBroker(sessionA.sessionId);
   const brokerB = makeBroker(sessionB.sessionId);
+  const brokerC = makeBroker(sessionC.sessionId);
   const cleanup = () => fs.rmSync(root, { recursive: true, force: true });
-  return { root, store, python, driver, manager, sessionA, sessionB, brokerA, brokerB, makeBroker, cleanup };
+  return { root, store, python, driver, manager, sessionA, sessionB, sessionC, brokerA, brokerB, brokerC, makeBroker, cleanup };
+}
+
+function provisionedCoordinatorPython() {
+  const python = process.env.S7B_REVIEW_COORDINATOR_PYTHON;
+  const artifact = process.env.S7B_REVIEW_COORDINATOR_ARTIFACT_SHA256;
+  const missing = !python || !path.isAbsolute(python) || !fs.existsSync(python) || !fs.statSync(python).isFile()
+    || artifact !== ARTIFACT_SHA256;
+  if (missing) {
+    throw new Error("S7-B review fixture prerequisite missing: set S7B_REVIEW_COORDINATOR_PYTHON to an absolute provisioned interpreter and S7B_REVIEW_COORDINATOR_ARTIFACT_SHA256 to the accepted wheel SHA");
+  }
+  const probe = spawnSync(python, ["-c", [
+    "import importlib.metadata as metadata",
+    "assert metadata.version('work-coordinator') == '0.2.0'",
+  ].join("\n")], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: TEST_HOME_ROOT,
+      XDG_CONFIG_HOME: path.join(TEST_HOME_ROOT, "config"),
+      PYTHONNOUSERSITE: "1",
+      PYTHONPATH: "",
+    },
+  });
+  if (probe.status !== 0) {
+    throw new Error(`S7-B review fixture prerequisite failed: provisioned interpreter does not expose work-coordinator==0.2.0 (${String(probe.stderr || probe.stdout || "unknown error").trim()})`);
+  }
+  return python;
 }
 
 function createSource(source) {

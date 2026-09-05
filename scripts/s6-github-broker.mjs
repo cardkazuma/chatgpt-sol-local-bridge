@@ -210,11 +210,6 @@ export class S6GitHubBroker {
     }
     const intent = await this.invokeCoordinatorBound({ action: "declare_intent", context, resources: [resource] }, context);
     assertCoordinatorResult(intent, "declare_intent");
-    if (observedContentSha256 !== undefined) {
-      const observation = this.coordinatorSnapshot(record, target, { contentSha256: observedContentSha256, contentProvided: true });
-      const observed = await this.invokeCoordinatorBound({ action: "observe_resource", context, path: relative, observation }, context);
-      assertCoordinatorResult(observed, "observe_resource");
-    }
 
     const exclusive = relative !== "HANDOFF.md";
     let claim = null;
@@ -223,7 +218,11 @@ export class S6GitHubBroker {
       assertCoordinatorResult(claim, "acquire_claim");
     }
 
-    const current = this.coordinatorSnapshot(record, target);
+    // The handler's content hash is mutation-derivation evidence, not a new
+    // persisted observation. The coordinator compares the task's saved
+    // observation with the broker's current repository snapshot; the handler
+    // hash is checked separately below and never written as read evidence.
+    let current = this.coordinatorSnapshot(record, target);
     let fence = null;
     if (claim?.decision === "ALLOW" && claim.effective_authority) {
       fence = {
@@ -232,10 +231,45 @@ export class S6GitHubBroker {
         safety_generation: this.coordinatorInteger("S7B_COORDINATOR_SAFETY_GENERATION"),
       };
     }
-    const checked = await this.invokeCoordinatorBound({
-      action: "check_before_mutation", context, path: relative, current, ...(fence ? { fence } : {}),
-    }, context);
-    assertCoordinatorResult(checked, "check_before_mutation");
+    const checkBeforeMutation = async (snapshot) => {
+      const result = await this.invokeCoordinatorBound({
+        action: "check_before_mutation", context, path: relative, current: snapshot, ...(fence ? { fence } : {}),
+      }, context);
+      assertCoordinatorResult(result, "check_before_mutation");
+      return result;
+    };
+    let checked = await checkBeforeMutation(current);
+
+    // A missing observation may be explicitly established only for a target
+    // that is still absent.  Existing-file mutations (and stale observations
+    // with freshness evidence) must return REFRESH and may not be silently
+    // refreshed from handler-entry or write-time bytes.
+    if (checked.decision === "REFRESH"
+      && !checked.freshness
+      && observedContentSha256 === null
+      && current.worktree_content_version?.state === "absent") {
+      const observation = this.coordinatorSnapshot(record, target, { contentSha256: null, contentProvided: true });
+      const observed = await this.invokeCoordinatorBound({ action: "observe_resource", context, path: relative, observation }, context);
+      assertCoordinatorResult(observed, "observe_resource");
+      current = this.coordinatorSnapshot(record, target, { contentSha256: null, contentProvided: true });
+      checked = await checkBeforeMutation(current);
+    }
+    if (["ALLOW", "WARN"].includes(checked.decision)
+      && observedContentSha256 !== undefined
+      && observedContentSha256 !== null
+      && !sameContentVersion(checked.freshness?.current?.worktree_content_version, {
+        state: "present", algorithm: "sha256", hex: observedContentSha256,
+      })) {
+      // The handler derived its mutation from different bytes than the
+      // coordinator checked. Treat this as a refresh requirement; the saved
+      // task/read observation remains untouched.
+      checked = {
+        ...checked,
+        decision: "REFRESH",
+        reason_code: "STALE_OBSERVATION",
+        message: "Mutation derivation is no longer based on the checked resource; re-read and rebuild the mutation.",
+      };
+    }
     const allowed = ["ALLOW", "WARN"].includes(checked.decision);
     return {
       allowed,
@@ -1158,6 +1192,12 @@ function assertCoordinatorResult(result, action) {
     throw new Error(`S7-B coordinator ${action} returned an invalid result`);
   }
   if (result.decision === "UNAVAILABLE") throw new Error(`S7-B coordinator ${action} is unavailable: ${result.reason_code || "unknown"}`);
+}
+
+function sameContentVersion(actual, expected) {
+  if (actual?.state !== expected?.state) return false;
+  if (actual?.state === "absent") return true;
+  return actual?.algorithm === expected?.algorithm && actual?.hex === expected?.hex;
 }
 
 function atomicWrite(filePath, value) {
