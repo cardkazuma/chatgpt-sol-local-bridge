@@ -4,6 +4,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { z } from "zod";
 import { commandExists, runCommand } from "../lib/exec.js";
+import { coordinatorBeforeMutation } from "../lib/coordinator-guard.js";
 import { denyDeleteMessage, queueDestructive } from "../lib/policy.js";
 import { assertStructuredPath, currentWorkspace, fileSnapshot, resolveUserPath, visibleFilePaths } from "../lib/paths.js";
 import { registerEnabledTool } from "../lib/tool-registry.js";
@@ -51,6 +52,7 @@ export function registerFiles(server) {
   }, async ({ path: input, content }) => {
     try {
       const resolved = assertStructuredPath(resolveUserPath(input), { write: true });
+      await coordinatorBeforeMutation({ operation: "write_file", targetPath: resolved });
       fs.mkdirSync(path.dirname(resolved), { recursive: true });
       if (fs.existsSync(resolved) && fs.statSync(resolved).size > 0 && content.length === 0) {
         const current = fs.readFileSync(resolved);
@@ -93,6 +95,9 @@ export function registerFiles(server) {
       const gitApply = ["git", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "apply"];
       const check = await runCommand([...gitApply, "--check", "--whitespace=nowarn", "-"], { cwd: root, shell: false, stdin: diff, signal: extra?.signal });
       if (!check.ok) return fail(check.stderr || check.stdout || "git apply --check failed");
+      for (const target of patchTargetPaths(diff, root)) {
+        await coordinatorBeforeMutation({ operation: "apply_patch", targetPath: target });
+      }
       const result = await runCommand([...gitApply, "--whitespace=nowarn", "-"], { cwd: root, shell: false, stdin: diff, signal: extra?.signal });
       return result.ok ? ok(result.stdout || `applied patch in ${root}`) : fail(result.stderr || result.stdout || "git apply failed");
     } catch (error) {
@@ -126,6 +131,7 @@ export function registerFiles(server) {
           expectedSha256: sha256(Buffer.from(current)),
         })));
       }
+      await coordinatorBeforeMutation({ operation: "edit_file", targetPath: resolved });
       atomicWriteText(resolved, next);
       return ok(`updated ${resolved} (${replaceAll ? matches : 1} replacement${matches === 1 ? "" : "s"})`);
     } catch (error) {
@@ -155,6 +161,19 @@ export function validatePatchPaths(diff, root) {
     }
     assertStructuredPath(path.resolve(root, normalized), { write: true });
   }
+}
+
+function patchTargetPaths(diff, root) {
+  const targets = new Set();
+  for (const line of String(diff).split(/\r?\n/)) {
+    if (!/^\+\+\+\s+/.test(line)) continue;
+    const value = line.replace(/^\+\+\+\s+/, "").split("\t", 1)[0];
+    if (["/dev/null", "NUL"].includes(value)) continue;
+    const withoutPrefix = value.replace(/^[ab][\\/]/, "");
+    targets.add(path.resolve(root, path.normalize(withoutPrefix)));
+  }
+  if (!targets.size) throw new Error("patch contains no coordinator target paths");
+  return [...targets];
 }
 
 function searchWithRipgrep({ root, pattern, glob, limit }) {

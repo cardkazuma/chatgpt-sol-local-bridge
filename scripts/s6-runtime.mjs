@@ -19,6 +19,7 @@ import { S5Runtime, EXPECTED_TOOLS as S5_EXPECTED_TOOLS, DISABLED_TOOLS, SIDECAR
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const APP_SUPPORT_ROOT = path.join(os.homedir(), "Library", "Application Support", "ChatGPT Local Bridge");
+const S7B_CONFIG_PATH = path.join(APP_SUPPORT_ROOT, "s7b-coordinator.json");
 const DEFAULT_RUNTIME_ROOT = path.join(APP_SUPPORT_ROOT, "s6-runtime");
 const DEFAULT_MANAGER_ROOT = path.join(os.tmpdir(), `chatgpt-local-bridge-s6-${typeof process.getuid === "function" ? process.getuid() : "user"}`);
 const BROKER_PROXY_HOST_SCRIPT = path.join(REPO_ROOT, "scripts", "s6-broker-proxy-host.mjs");
@@ -29,6 +30,7 @@ const S6_EXPECTED_TOOLS = Object.freeze([
 ]);
 
 export { S6_EXPECTED_TOOLS, DISABLED_TOOLS };
+export function readS7BCoordinatorConfig() { return readS7BConfig(); }
 
 export class S6Runtime extends S5Runtime {
   constructor({
@@ -382,7 +384,7 @@ function safeHostEnvironment() {
 function brokerHostEnvironment(managerRoot) {
   const home = path.join(managerRoot, "git-home");
   fs.mkdirSync(path.join(home, "config"), { recursive: true, mode: 0o700 });
-  return {
+  const environment = {
     PATH: process.env.PATH || "/usr/bin:/bin",
     HOME: home,
     XDG_CONFIG_HOME: path.join(home, "config"),
@@ -390,6 +392,36 @@ function brokerHostEnvironment(managerRoot) {
     LANG: "C",
     LC_ALL: "C",
   };
+  const coordinator = readS7BConfig();
+  if (coordinator) Object.assign(environment, {
+    S7B_COORDINATOR_PYTHON: coordinator.pythonExecutable,
+    S7B_COORDINATOR_DRIVER: coordinator.driver,
+    S7B_COORDINATOR_STORE: coordinator.store,
+    S7B_COORDINATOR_BOOT_IDENTITY: coordinator.bootIdentity,
+    S7B_COORDINATOR_SAFETY_GENERATION: String(coordinator.safetyGeneration),
+    S7B_COORDINATOR_REPOSITORY_ID: String(coordinator.repositoryId),
+    S7B_COORDINATOR_ARTIFACT_SHA256: coordinator.artifactSha256,
+  });
+  return environment;
+}
+
+function readS7BConfig() {
+  if (!fs.existsSync(S7B_CONFIG_PATH)) return null;
+  const stat = fs.lstatSync(S7B_CONFIG_PATH);
+  if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0 || (typeof process.getuid === "function" && stat.uid !== process.getuid())) {
+    throw new Error("S7-B coordinator configuration must be an owner-only regular file");
+  }
+  let value;
+  try { value = JSON.parse(fs.readFileSync(S7B_CONFIG_PATH, "utf8")); } catch { throw new Error("S7-B coordinator configuration is invalid"); }
+  const required = ["version", "artifactSha256", "pythonExecutable", "driver", "store", "bootIdentity", "safetyGeneration", "repositoryId"];
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== required.slice().sort().join(",") || value.version !== 1) throw new Error("S7-B coordinator configuration is invalid");
+  if (![value.pythonExecutable, value.driver, value.store].every((item) => typeof item === "string" && path.isAbsolute(item))) throw new Error("S7-B coordinator configuration paths are invalid");
+  if (!/^[0-9a-f]{64}$/.test(value.artifactSha256) || value.artifactSha256 !== "3e528011ce130797af25aeca2f1bb1faea294cd46838cfbadffc488cd9463f96") throw new Error("S7-B coordinator artifact selector is invalid");
+  if (typeof value.bootIdentity !== "string" || !value.bootIdentity || !Number.isInteger(value.safetyGeneration) || value.safetyGeneration <= 0 || !Number.isInteger(value.repositoryId) || value.repositoryId !== 1297989453) throw new Error("S7-B coordinator safety identity is invalid");
+  for (const item of [value.pythonExecutable, value.driver, value.store]) {
+    if (!fs.existsSync(item) || !fs.lstatSync(item).isFile() || fs.lstatSync(item).isSymbolicLink()) throw new Error("S7-B coordinator selected binding is unavailable");
+  }
+  return value;
 }
 
 export function dockerDesktopMountSourceMatches(reported, expected, platform = process.platform) {

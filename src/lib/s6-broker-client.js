@@ -5,9 +5,19 @@ const CAPABILITY = /^[a-f0-9]{64}$/;
 const BROKER_CAPABILITY = crypto.randomBytes(32).toString("hex");
 let brokerRegistered = false;
 let registrationPromise = null;
+let testBrokerRequest = null;
+
+const COORDINATED_ROUTES = new Set(["write_file", "edit_file", "apply_patch"]);
+const RELATIVE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.\/?)(?!.*(?:^|\/)\.(?:\/|$))(?!.*\/\/)[^\0]+$/;
 
 export function s6BrokerConfigured() {
-  return Boolean(process.env.S6_BROKER_SOCKET && brokerRegistered);
+  return Boolean(testBrokerRequest || (process.env.S6_BROKER_SOCKET && brokerRegistered));
+}
+
+/** Test-only transport seam; production requests always use the fixed socket. */
+export function setS6BrokerRequestForTests(requester = null) {
+  if (requester !== null && typeof requester !== "function") throw new TypeError("S6 broker test requester must be a function or null");
+  testBrokerRequest = requester;
 }
 
 export function initializeS6Broker() {
@@ -36,7 +46,16 @@ export function s6BrokerPublishBranch() {
   return requestBroker({ operation: "publish" });
 }
 
+export function s6BrokerCoordinateMutation(route, repositoryRelativePath) {
+  if (!COORDINATED_ROUTES.has(route)) throw new Error("S7-B coordinator route is not covered by the Bridge adapter");
+  if (typeof repositoryRelativePath !== "string" || !RELATIVE_PATH.test(repositoryRelativePath)) {
+    throw new Error("S7-B coordinator path must be a normalized repository-relative path");
+  }
+  return requestBroker({ operation: "coordinate-mutation", route, path: repositoryRelativePath });
+}
+
 function requestBroker(request, { registration = false } = {}) {
+  if (!registration && testBrokerRequest) return Promise.resolve(testBrokerRequest(request));
   const socketPath = String(process.env.S6_BROKER_SOCKET || "");
   if (socketPath !== "/transport/s6-broker.sock") throw new Error("S6 broker channel identity is invalid");
   if (!registration && !brokerRegistered) throw new Error("S6 broker attestation channel is not registered");
@@ -47,7 +66,19 @@ function requestBroker(request, { registration = false } = {}) {
   if (!registration && request.operation === "publish" && requestKeys.join(",") !== "operation") throw new Error("invalid S6 publish request");
   if (!registration && request.operation === "preflight-commit" && requestKeys.join(",") !== "operation") throw new Error("invalid S6 commit preflight request");
   if (!registration && request.operation === "attest" && (requestKeys.join(",") !== "operation,sha" || !/^[0-9a-f]{40}$/.test(String(request.sha || "")))) throw new Error("invalid S6 attestation request");
-  const body = JSON.stringify({ capability, operation: request.operation, ...(request.sha ? { sha: request.sha } : {}) });
+  if (!registration && request.operation === "coordinate-mutation" && (
+    requestKeys.join(",") !== "operation,path,route"
+    || !COORDINATED_ROUTES.has(request.route)
+    || typeof request.path !== "string"
+    || !RELATIVE_PATH.test(request.path)
+  )) throw new Error("invalid S7-B coordinator request");
+  const body = JSON.stringify({
+    capability,
+    operation: request.operation,
+    ...(request.sha ? { sha: request.sha } : {}),
+    ...(request.route ? { route: request.route } : {}),
+    ...(request.path ? { path: request.path } : {}),
+  });
   return new Promise((resolve, reject) => {
     let settled = false;
     let response = "";
