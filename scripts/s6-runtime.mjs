@@ -310,7 +310,8 @@ export class S6Runtime extends S5Runtime {
   }
 
   startSupervisor(state) {
-    const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "supervise", this.stateFile], {
+    const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "supervise", this.stateFile,
+      "--runtime-root", this.runtimeRoot, "--manager-root", this.managerRoot], {
       cwd: this.repoRoot,
       env: safeHostEnvironment(),
       detached: true,
