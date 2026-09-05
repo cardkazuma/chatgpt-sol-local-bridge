@@ -1,27 +1,27 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { z } from "zod";
-import { ALLOW_TOOL_ROOT_REGISTRATION, loadState, saveState, workspaceRoots } from "../lib/config.js";
-import { assertAllowed, assertInRegisteredRoots, canonicalPath, currentWorkspace, resolveUserPath, walkTree } from "../lib/paths.js";
+import { loadState, saveState, workspaceRoots } from "../lib/config.js";
+import { assertStructuredPath, canonicalPath, currentWorkspace, resolveUserPath, walkTree } from "../lib/paths.js";
+import { registerEnabledTool } from "../lib/tool-registry.js";
 import { fail, json, ok } from "../lib/text.js";
 
 export function registerWorkspace(server) {
-  server.registerTool("workspace_list", {
+  registerEnabledTool(server, "workspace_list", {
     title: "List workspaces",
     description: "List registered project roots and the current workspace.",
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
-  }, async () => json({ current: currentWorkspace() || null, roots: workspaceRoots(), home: os.homedir() }));
+  }, async () => json({ current: currentWorkspace() || null, roots: workspaceRoots().filter(isVisibleRoot) }));
 
-  server.registerTool("workspace_open", {
+  registerEnabledTool(server, "workspace_open", {
     title: "Open workspace",
-    description: "Set the current project directory used as the default cwd for file, git, project, and shell tools.",
+    description: "Set the current disposable project directory used as the default cwd for file, Git, project, and repo_shell tools.",
     inputSchema: { path: z.string().describe("Absolute, relative-to-current, or ~ path to a project directory") },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   }, async ({ path: input }) => {
     try {
-      const resolved = assertInRegisteredRoots(resolveUserPath(input));
+      const resolved = assertStructuredPath(resolveUserPath(input));
       if (!fs.statSync(resolved).isDirectory()) return fail(`${resolved} is not a directory`);
       const state = loadState();
       state.currentWorkspace = canonicalPath(resolved);
@@ -32,28 +32,7 @@ export function registerWorkspace(server) {
     }
   });
 
-  server.registerTool("workspace_add_root", {
-    title: "Add workspace root",
-    description: "Register an extra directory tree the agent may read and edit. Registration persists in bridge state.",
-    inputSchema: { path: z.string() },
-    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
-  }, async ({ path: input }) => {
-    try {
-      if (!ALLOW_TOOL_ROOT_REGISTRATION) {
-        return fail("workspace_add_root is disabled by default because it expands agent authority. Add the path to WORKSPACE_ROOTS in .env, or set ALLOW_TOOL_ROOT_REGISTRATION=true intentionally.");
-      }
-      const resolved = assertAllowed(resolveUserPath(input));
-      if (!fs.statSync(resolved).isDirectory()) return fail(`${resolved} is not a directory`);
-      const state = loadState();
-      state.extraRoots = [...new Set([...(state.extraRoots || []), canonicalPath(resolved)])];
-      saveState(state);
-      return json({ extraRoots: state.extraRoots });
-    } catch (error) {
-      return fail(error.message);
-    }
-  });
-
-  server.registerTool("workspace_tree", {
+  registerEnabledTool(server, "workspace_tree", {
     title: "Workspace tree",
     description: "Bounded project tree snapshot; skips .git, node_modules, virtualenvs, and does not follow symlink directories.",
     inputSchema: {
@@ -72,7 +51,7 @@ export function registerWorkspace(server) {
     }
   });
 
-  server.registerTool("workspace_snapshot", {
+  registerEnabledTool(server, "workspace_snapshot", {
     title: "Workspace snapshot",
     description: "High-level snapshot: current workspace, git HEAD/status, package metadata, and top-level files.",
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
@@ -80,10 +59,16 @@ export function registerWorkspace(server) {
     try {
       const root = currentWorkspace();
       if (!root) return fail("no current workspace — call workspace_open first");
-      const top = fs.readdirSync(root).filter((name) => name !== ".DS_Store").sort().slice(0, 100);
+      const top = fs.readdirSync(root)
+        .filter((name) => name !== ".DS_Store")
+        .map((name) => path.join(root, name))
+        .filter(isVisiblePath)
+        .map((name) => path.basename(name))
+        .sort()
+        .slice(0, 100);
       const pkgPath = path.join(root, "package.json");
       let pkg = null;
-      if (fs.existsSync(pkgPath)) {
+      if (fs.existsSync(pkgPath) && isVisiblePath(pkgPath)) {
         const parsed = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
         pkg = { name: parsed.name || null, version: parsed.version || null, scripts: Object.keys(parsed.scripts || {}) };
       }
@@ -93,6 +78,19 @@ export function registerWorkspace(server) {
       return fail(error.message);
     }
   });
+}
+
+function isVisibleRoot(root) {
+  return isVisiblePath(root);
+}
+
+function isVisiblePath(target) {
+  try {
+    assertStructuredPath(target);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function gitSnapshot(root) {

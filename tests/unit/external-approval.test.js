@@ -7,7 +7,7 @@ import path from "node:path";
 
 const base = fs.mkdtempSync(path.join(os.tmpdir(), "sol-external-approval-"));
 const verifier = path.join(base, "verifier.sh");
-const marker = path.join(os.homedir(), `.sol-approval-marker-${process.pid}`);
+const marker = path.join(base, `.sol-approval-marker-${process.pid}`);
 fs.writeFileSync(verifier, `#!/bin/sh\n[ "$1" = verify ] && [ -f '${marker}' ]\n`, { mode: 0o755 });
 process.env.BRIDGE_STATE_DIR = path.join(base, "state");
 process.env.DESTRUCTIVE_APPROVAL_MODE = "external";

@@ -4,12 +4,14 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { z } from "zod";
 import { commandExists, runCommand } from "../lib/exec.js";
+import { assertCoordinatorWriteBoundary, coordinatorBeforeMutation, coordinatorObserveRead } from "../lib/coordinator-guard.js";
 import { denyDeleteMessage, queueDestructive } from "../lib/policy.js";
-import { assertInWorkspace, currentWorkspace, fileSnapshot, resolveUserPath } from "../lib/paths.js";
+import { assertStructuredPath, currentWorkspace, fileSnapshot, resolveUserPath, visibleFilePaths } from "../lib/paths.js";
+import { registerEnabledTool } from "../lib/tool-registry.js";
 import { fail, json, ok } from "../lib/text.js";
 
 export function registerFiles(server) {
-  server.registerTool("read_file", {
+  registerEnabledTool(server, "read_file", {
     title: "Read file",
     description: "Read a file or list a directory inside a registered workspace. Binary content is returned as bounded base64.",
     inputSchema: {
@@ -18,11 +20,19 @@ export function registerFiles(server) {
     },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
   }, async ({ path: input, maxBytes }) => {
-    try { return json(fileSnapshot(resolveUserPath(input), { maxBytes: maxBytes ?? 200_000 })); }
+    try {
+      const resolved = assertStructuredPath(resolveUserPath(input));
+      const snapshot = fileSnapshot(resolved, { maxBytes: maxBytes ?? 200_000 });
+      if (snapshot.type === "file" && !snapshot.truncated) {
+        const bytes = snapshot.encoding === "base64" ? Buffer.from(snapshot.content, "base64") : Buffer.from(snapshot.content, "utf8");
+        await coordinatorObserveRead({ targetPath: resolved, contentSha256: sha256(bytes) });
+      }
+      return json(snapshot);
+    }
     catch (error) { return fail(error.message); }
   });
 
-  server.registerTool("search_text", {
+  registerEnabledTool(server, "search_text", {
     title: "Search text",
     description: "Regex search with ripgrep across a workspace. If ripgrep is unavailable, uses a bounded literal-text fallback (never an untrusted JavaScript regex).",
     inputSchema: {
@@ -34,7 +44,7 @@ export function registerFiles(server) {
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
   }, async ({ pattern, path: input, glob, maxMatches }) => {
     try {
-      const root = assertInWorkspace(input ? resolveUserPath(input) : currentWorkspace() || process.cwd());
+      const root = assertStructuredPath(input ? resolveUserPath(input) : currentWorkspace() || process.cwd());
       const limit = maxMatches ?? 40;
       return json(commandExists("rg") ? searchWithRipgrep({ root, pattern, glob, limit }) : searchWithJavaScript({ root, pattern, glob, limit }));
     } catch (error) {
@@ -42,14 +52,17 @@ export function registerFiles(server) {
     }
   });
 
-  server.registerTool("write_file", {
+  registerEnabledTool(server, "write_file", {
     title: "Write file",
     description: "Create or atomically overwrite a file inside a registered workspace. Creates parent directories; never deletes.",
     inputSchema: { path: z.string(), content: z.string() },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   }, async ({ path: input, content }) => {
     try {
-      const resolved = assertInWorkspace(resolveUserPath(input), { write: true });
+      const resolved = assertStructuredPath(resolveUserPath(input), { write: true });
+      const observedContentSha256 = fs.existsSync(resolved) ? undefined : null;
+      const guard = await coordinatorBeforeMutation({ operation: "write_file", targetPath: resolved, observedContentSha256 });
+      assertCoordinatorWriteBoundary({ targetPath: resolved, result: guard.result });
       fs.mkdirSync(path.dirname(resolved), { recursive: true });
       if (fs.existsSync(resolved) && fs.statSync(resolved).size > 0 && content.length === 0) {
         const current = fs.readFileSync(resolved);
@@ -67,9 +80,9 @@ export function registerFiles(server) {
     }
   });
 
-  server.registerTool("apply_patch", {
+  registerEnabledTool(server, "apply_patch", {
     title: "Apply patch",
-    description: "Check and apply a unified/git diff to one or more files. File deletion patches are previewed and require confirm_destructive.",
+    description: "Check and apply a unified/git diff to visible files. File-deletion patches are denied in S1; no destructive confirmation tool is exposed.",
     inputSchema: {
       diff: z.string().min(1).max(500_000).describe("Unified diff / git-style patch"),
       cwd: z.string().optional(),
@@ -77,7 +90,8 @@ export function registerFiles(server) {
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   }, async ({ diff, cwd }, extra) => {
     try {
-      const root = assertInWorkspace(cwd ? resolveUserPath(cwd) : currentWorkspace() || process.cwd(), { write: true });
+      const root = assertStructuredPath(cwd ? resolveUserPath(cwd) : currentWorkspace() || process.cwd(), { write: true });
+      validatePatchPaths(diff, root);
       if (patchDeletesFile(diff)) {
         const pending = queueDestructive({
           kind: "apply_patch_delete",
@@ -91,6 +105,13 @@ export function registerFiles(server) {
       const gitApply = ["git", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "apply"];
       const check = await runCommand([...gitApply, "--check", "--whitespace=nowarn", "-"], { cwd: root, shell: false, stdin: diff, signal: extra?.signal });
       if (!check.ok) return fail(check.stderr || check.stdout || "git apply --check failed");
+      const targets = patchTargetPaths(diff, root);
+      const observations = targets.map((target) => ({ target, observedContentSha256: observedContentVersion(target) }));
+      const guards = [];
+      for (const { target, observedContentSha256 } of observations) {
+        guards.push(await coordinatorBeforeMutation({ operation: "apply_patch", targetPath: target, observedContentSha256 }));
+      }
+      for (const { target } of observations) assertCoordinatorWriteBoundary({ targetPath: target, result: guards.shift().result });
       const result = await runCommand([...gitApply, "--whitespace=nowarn", "-"], { cwd: root, shell: false, stdin: diff, signal: extra?.signal });
       return result.ok ? ok(result.stdout || `applied patch in ${root}`) : fail(result.stderr || result.stdout || "git apply failed");
     } catch (error) {
@@ -98,7 +119,7 @@ export function registerFiles(server) {
     }
   });
 
-  server.registerTool("edit_file", {
+  registerEnabledTool(server, "edit_file", {
     title: "Edit file",
     description: "Replace an exact text occurrence in a file. By default the match must be unique; set replaceAll only when intentional.",
     inputSchema: {
@@ -110,7 +131,7 @@ export function registerFiles(server) {
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   }, async ({ path: input, oldText, newText, replaceAll = false }) => {
     try {
-      const resolved = assertInWorkspace(resolveUserPath(input), { write: true });
+      const resolved = assertStructuredPath(resolveUserPath(input), { write: true });
       const current = fs.readFileSync(resolved, "utf8");
       const matches = countOccurrences(current, oldText);
       if (matches === 0) return fail(`oldText not found in ${resolved}`);
@@ -124,6 +145,10 @@ export function registerFiles(server) {
           expectedSha256: sha256(Buffer.from(current)),
         })));
       }
+      const guard = await coordinatorBeforeMutation({
+        operation: "edit_file", targetPath: resolved, observedContentSha256: sha256(Buffer.from(current, "utf8")),
+      });
+      assertCoordinatorWriteBoundary({ targetPath: resolved, result: guard.result });
       atomicWriteText(resolved, next);
       return ok(`updated ${resolved} (${replaceAll ? matches : 1} replacement${matches === 1 ? "" : "s"})`);
     } catch (error) {
@@ -138,10 +163,44 @@ export function patchDeletesFile(diff) {
     || /^\+\+\+\s+NUL\b/im.test(diff);
 }
 
+export function validatePatchPaths(diff, root) {
+  const headers = String(diff).split(/\r?\n/).filter((line) => /^(?:---|\+\+\+)\s+/.test(line));
+  const paths = headers
+    .map((line) => line.replace(/^(?:---|\+\+\+)\s+/, "").split("\t", 1)[0])
+    .filter((value) => !["/dev/null", "NUL"].includes(value));
+  if (!paths.length) throw new Error("patch contains no readable file paths");
+  for (const value of paths) {
+    if (!value || value.includes("\0") || path.isAbsolute(value) || path.win32.isAbsolute(value)) throw new Error(`patch path is not workspace-relative: ${value}`);
+    const withoutPrefix = value.replace(/^[ab][\\/]/, "");
+    const normalized = path.normalize(withoutPrefix);
+    if (!normalized || normalized === "." || normalized === ".." || normalized.startsWith(`..${path.sep}`)) {
+      throw new Error(`patch path escapes the workspace: ${value}`);
+    }
+    assertStructuredPath(path.resolve(root, normalized), { write: true });
+  }
+}
+
+function patchTargetPaths(diff, root) {
+  const targets = new Set();
+  for (const line of String(diff).split(/\r?\n/)) {
+    if (!/^\+\+\+\s+/.test(line)) continue;
+    const value = line.replace(/^\+\+\+\s+/, "").split("\t", 1)[0];
+    if (["/dev/null", "NUL"].includes(value)) continue;
+    const withoutPrefix = value.replace(/^[ab][\\/]/, "");
+    targets.add(path.resolve(root, path.normalize(withoutPrefix)));
+  }
+  if (!targets.size) throw new Error("patch contains no coordinator target paths");
+  return [...targets];
+}
+
 function searchWithRipgrep({ root, pattern, glob, limit }) {
-  const args = ["--json", "--max-count", String(limit), "--max-filesize", "1M", "--hidden", "--glob", "!.git/**", "--glob", "!node_modules/**"];
-  if (glob) args.push("--glob", glob);
-  args.push(pattern, root);
+  const globRegex = glob ? globToRegExp(glob) : null;
+  const files = visibleFilePaths(root).filter((file) => {
+    const relative = path.relative(root, file).split(path.sep).join("/");
+    return !globRegex || globRegex.test(relative);
+  });
+  if (!files.length) return { backend: "ripgrep", root, count: 0, hits: [] };
+  const args = ["--json", "--max-count", String(limit), "--max-filesize", "1M", "--no-messages", "--", pattern, ...files];
   const result = spawnSync("rg", args, { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
   const hits = String(result.stdout || "").split("\n").filter(Boolean).flatMap((line) => {
     try {
@@ -156,25 +215,17 @@ function searchWithRipgrep({ root, pattern, glob, limit }) {
 function searchWithJavaScript({ root, pattern, glob, limit }) {
   const hits = [];
   const globRegex = glob ? globToRegExp(glob) : null;
-  const walk = (dir) => {
-    if (hits.length >= limit) return;
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if ([".git", "node_modules", ".venv", "__pycache__"].includes(entry.name)) continue;
-      const full = path.join(dir, entry.name);
-      const rel = path.relative(root, full).split(path.sep).join("/");
-      if (entry.isDirectory() && !entry.isSymbolicLink()) walk(full);
-      else if (entry.isFile() && (!globRegex || globRegex.test(rel)) && entry.name !== ".DS_Store") {
-        const stat = fs.statSync(full);
-        if (stat.size > 1_000_000) continue;
-        const lines = fs.readFileSync(full, "utf8").split(/\r?\n/);
-        for (let index = 0; index < lines.length && hits.length < limit; index += 1) {
-          if (lines[index].includes(pattern)) hits.push({ path: full, line: index + 1, text: lines[index].trim() });
-        }
-      }
-      if (hits.length >= limit) break;
+  for (const full of visibleFilePaths(root)) {
+    if (hits.length >= limit) break;
+    const rel = path.relative(root, full).split(path.sep).join("/");
+    if (globRegex && !globRegex.test(rel)) continue;
+    const stat = fs.statSync(full);
+    if (stat.size > 1_000_000) continue;
+    const lines = fs.readFileSync(full, "utf8").split(/\r?\n/);
+    for (let index = 0; index < lines.length && hits.length < limit; index += 1) {
+      if (lines[index].includes(pattern)) hits.push({ path: full, line: index + 1, text: lines[index].trim() });
     }
-  };
-  walk(root);
+  }
   return { backend: "javascript-literal", note: "ripgrep unavailable; pattern was treated as literal text", root, count: hits.length, hits };
 }
 
@@ -184,7 +235,7 @@ function globToRegExp(glob) {
 }
 
 function atomicWriteText(target, content) {
-  const revalidated = assertInWorkspace(target, { write: true });
+  const revalidated = assertStructuredPath(target, { write: true });
   if (revalidated !== target) throw new Error(`write path changed during validation: ${target}`);
   const mode = fs.existsSync(target) ? fs.statSync(target).mode : 0o644;
   const tmp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${Date.now()}.tmp`);
@@ -199,6 +250,13 @@ function atomicWriteText(target, content) {
 
 function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function observedContentVersion(target) {
+  if (!fs.existsSync(target)) return null;
+  const stat = fs.lstatSync(target);
+  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error("patch target is not a regular file");
+  return sha256(fs.readFileSync(target));
 }
 
 function countOccurrences(text, search) {

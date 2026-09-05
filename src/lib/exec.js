@@ -10,6 +10,7 @@ import {
   MAX_STDOUT_CHARS,
   PROCESS_RETENTION_DAYS,
   PROC_DIR,
+  HARDENED_CONTAINER,
   TOOL_ENV_ALLOWLIST,
   TOOL_ENV_INHERIT_SECRETS,
   atomicWriteJson,
@@ -245,6 +246,13 @@ export function commandExists(command) {
 
 function getProcessIdentity(pid) {
   try {
+    if (process.platform === "linux") {
+      const stat = fs.readFileSync(`/proc/${Number(pid)}/stat`, "utf8");
+      const endOfCommand = stat.lastIndexOf(")");
+      const fieldsAfterCommand = stat.slice(endOfCommand + 2).trim().split(/\s+/);
+      const startTime = fieldsAfterCommand[19];
+      return startTime ? `linux:${startTime}` : "";
+    }
     if (process.platform === "win32") {
       const script = `(Get-Process -Id ${Number(pid)} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`;
       const binary = commandExists("pwsh") ? "pwsh" : "powershell.exe";
@@ -259,15 +267,49 @@ function getProcessIdentity(pid) {
 }
 
 export function toolEnvironment(overrides = {}) {
-  const env = { ...process.env, ...(overrides || {}) };
-  if (TOOL_ENV_INHERIT_SECRETS) return env;
+  const env = HARDENED_CONTAINER
+    ? hardenedEnvironment(overrides)
+    : { ...process.env, ...(overrides || {}) };
+  for (const key of [
+    "S6_BROKER_SOCKET", "S6_BROKER_CAPABILITY", "S6_GITHUB_TOKEN_FILE",
+    "GITHUB_TOKEN", "GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GITLAB_TOKEN", "BITBUCKET_TOKEN",
+    "GIT_ASKPASS", "GIT_SSH_COMMAND", "SSH_AUTH_SOCK",
+  ]) delete env[key];
+  if (TOOL_ENV_INHERIT_SECRETS && !HARDENED_CONTAINER) return env;
   for (const key of Object.keys(env)) {
+    if (/^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)$/.test(key)) {
+      delete env[key];
+      continue;
+    }
     if (TOOL_ENV_ALLOWLIST.has(key)) continue;
     if (/(?:^|_)(?:TOKEN|SECRET|PASSWORD|PASSWD|KEY|API_KEY|PRIVATE_KEY|CREDENTIALS?)(?:$|_)/i.test(key)
       || ["MCP_TOKEN", "CONTROL_PLANE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"].includes(key)) {
       delete env[key];
     }
   }
+  return env;
+}
+
+function hardenedEnvironment(overrides) {
+  const allowed = new Set([
+    "CI", "HOME", "HOST", "LANG", "LC_ALL", "LC_CTYPE", "LOGNAME", "NODE_ENV", "NO_COLOR",
+    "PATH", "PORT", "PWD", "TEMP", "TERM", "TMP", "TMPDIR", "TZ", "USER",
+    // Non-secret manager-mounted governance coordinates are needed by the
+    // reviewed S6 hook. Broker socket/capability variables intentionally stay
+    // out of child environments.
+    "BRIDGE_GOVERNANCE_MODE", "BRIDGE_REVIEWED_HOOK_PATH", "BRIDGE_REVIEWED_HOOKS_PATH", "BRIDGE_REVIEWED_POLICY_PATH",
+  ]);
+  const env = Object.fromEntries(Object.entries({ ...process.env, ...(overrides || {}) })
+    .filter(([key]) => allowed.has(key)));
+  env.HOME ||= "/home/bridge";
+  env.TMPDIR ||= "/tmp";
+  env.TMP ||= "/tmp";
+  env.TEMP ||= "/tmp";
+  env.NO_COLOR ||= "1";
+  env.NPM_CONFIG_USERCONFIG = "/dev/null";
+  env.GIT_CONFIG_NOSYSTEM = "1";
+  env.GIT_CONFIG_GLOBAL = "/dev/null";
+  env.GIT_TERMINAL_PROMPT = "0";
   return env;
 }
 

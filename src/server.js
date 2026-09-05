@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -7,27 +9,40 @@ import {
   APP_NAME,
   APP_VERSION,
   BODY_LIMIT,
+  ENABLED_TOOL_NAMES,
+  HARDENED_CONTAINER,
   HOST,
   MCP_TOKEN,
+  MCP_UNIX_SOCKET_PATH,
   PORT,
   ensureStateDirs,
   isLoopbackHost,
   validateRuntimeConfig,
+  validateUnixSocketPath,
 } from "./lib/config.js";
 import { auditEvent, instrumentServer } from "./lib/audit.js";
 import { httpUrl, normalizeHost } from "./lib/net.js";
 import { platformSummary } from "./platform/index.js";
-import { EXPECTED_TOOL_NAMES } from "./tool-contract.js";
-import { registerDesktop } from "./tools/desktop.js";
 import { registerFiles } from "./tools/files.js";
 import { registerGit } from "./tools/git.js";
 import { registerPolicy } from "./tools/policy.js";
 import { registerProcess } from "./tools/process.js";
 import { registerProject } from "./tools/project.js";
 import { registerWorkspace } from "./tools/workspace.js";
+import { initializeS6Broker } from "./lib/s6-broker-client.js";
 
-// The control-plane key belongs only to tunnel-client and must never reach tool children.
-delete process.env.CONTROL_PLANE_API_KEY;
+// Control-plane and GitHub credential material, if inherited from an outer
+// launcher, must never enter the bridge process or its tool children.
+for (const key of [
+  "CONTROL_PLANE_API_KEY", "S6_GITHUB_TOKEN_FILE", "S6_BROKER_CAPABILITY",
+  "GITHUB_TOKEN", "GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GITLAB_TOKEN", "BITBUCKET_TOKEN",
+  "GIT_ASKPASS", "GIT_SSH_COMMAND", "SSH_AUTH_SOCK",
+]) delete process.env[key];
+
+// S6 registers an in-memory capability with the per-session host broker before
+// the MCP server becomes available. The capability is never placed in the
+// container environment, workspace, child environment, or audit stream.
+if (process.env.S6_BROKER_SOCKET) await initializeS6Broker();
 
 export function createServer() {
   const server = instrumentServer(new McpServer({
@@ -39,8 +54,9 @@ export function createServer() {
       "You are connected to this workstation through chatgpt-sol-local-bridge.",
       "Call bridge_instructions before operating.",
       "Create/update/edit/test/build are allowed inside registered workspaces.",
-      "Destructive actions are blocked until the human confirms an exact short-lived token.",
-      `Active platform adapter: ${platformSummary().adapter}.`,
+      "The repo_shell and project commands run only inside the hardened non-root bridge container.",
+      "Destructive approval mode is deny; no destructive confirmation tool is exposed.",
+      `Enabled bridge tools: ${ENABLED_TOOL_NAMES.join(", ")}.`,
     ].join(" "),
   }));
   registerPolicy(server);
@@ -49,7 +65,6 @@ export function createServer() {
   registerGit(server);
   registerProject(server);
   registerProcess(server);
-  registerDesktop(server);
   return server;
 }
 
@@ -71,7 +86,7 @@ export function createApp({ host = HOST } = {}) {
     res.json({ ok: true, name: APP_NAME, version: APP_VERSION, platform: platformSummary(), pid: process.pid });
   });
   app.get("/readyz", (_req, res) => {
-    res.json({ ready: true, toolCount: EXPECTED_TOOL_NAMES.length, tools: EXPECTED_TOOL_NAMES });
+    res.json({ ready: true, toolCount: ENABLED_TOOL_NAMES.length, tools: ENABLED_TOOL_NAMES });
   });
 
   app.post("/mcp", async (req, res) => {
@@ -109,16 +124,33 @@ export function createApp({ host = HOST } = {}) {
   return { app, activeTransports };
 }
 
-export function startHttpServer({ host = HOST, port = PORT } = {}) {
+export function startHttpServer({ host = HOST, port = PORT, unixSocketPath = MCP_UNIX_SOCKET_PATH } = {}) {
   const { app, activeTransports } = createApp({ host });
+  validateUnixSocketPath(unixSocketPath);
+  if (unixSocketPath) prepareUnixSocket(unixSocketPath);
   const sockets = new Set();
-  const httpServer = app.listen(port, host, () => {
+  const httpServer = unixSocketPath
+    ? app.listen(unixSocketPath, onListening)
+    : app.listen(port, host, onListening);
+
+  function onListening() {
+    if (unixSocketPath) {
+      try {
+        fs.chmodSync(unixSocketPath, 0o600);
+      } catch (error) {
+        if (!new Set(["EINVAL", "ENOTSUP"]).has(error?.code)) throw error;
+        auditEvent("server.socket_mode_unavailable", { socketPath: unixSocketPath, error: error.code });
+      }
+    }
     const address = httpServer.address();
     const actualPort = typeof address === "object" && address ? address.port : port;
-    console.log(`${APP_NAME} ${APP_VERSION} listening on ${httpUrl(host, actualPort, "/mcp")}`);
-    console.log(`44 tools | platform=${platformSummary().adapter} | destructive approval enabled`);
-    auditEvent("server.started", { host, port: actualPort, platform: platformSummary() });
-  });
+    const endpoint = unixSocketPath
+      ? `Unix socket ${unixSocketPath} (HTTP path /mcp)`
+      : httpUrl(host, actualPort, "/mcp");
+    console.log(`${APP_NAME} ${APP_VERSION} listening on ${endpoint}`);
+    console.log(`${ENABLED_TOOL_NAMES.length} enabled bridge tools | platform=${platformSummary().adapter} | destructive approval=${process.env.DESTRUCTIVE_APPROVAL_MODE || "deny"}`);
+    auditEvent("server.started", { host, port: actualPort, unixSocketPath: unixSocketPath || null, platform: platformSummary() });
+  }
 
   httpServer.on("connection", (socket) => {
     sockets.add(socket);
@@ -138,8 +170,40 @@ export function startHttpServer({ host = HOST, port = PORT } = {}) {
       for (const socket of sockets) socket.destroy();
       await Promise.race([closed, delay(500)]);
     }
+    if (unixSocketPath) removeOwnedUnixSocket(unixSocketPath);
   };
   return { app, httpServer, shutdown };
+}
+
+function prepareUnixSocket(socketPath) {
+  const parent = path.dirname(socketPath);
+  fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
+  if ((fs.statSync(parent).mode & 0o077) !== 0) throw new Error(`MCP Unix socket parent must be private: ${parent}`);
+  if (HARDENED_CONTAINER) {
+    const transportRoot = fs.realpathSync("/transport");
+    const parentReal = fs.realpathSync(parent);
+    if (transportRoot !== "/transport" || !isWithinPath(parentReal, transportRoot)) {
+      throw new Error(`MCP Unix socket parent escaped /transport: ${parent}`);
+    }
+  }
+  if (!fs.existsSync(socketPath)) return;
+  const stat = fs.lstatSync(socketPath);
+  if (!stat.isSocket()) throw new Error(`Refusing to replace non-socket MCP_UNIX_SOCKET_PATH: ${socketPath}`);
+  fs.unlinkSync(socketPath);
+}
+
+function isWithinPath(candidate, parent) {
+  const relative = path.relative(parent, candidate);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+function removeOwnedUnixSocket(socketPath) {
+  try {
+    const stat = fs.lstatSync(socketPath);
+    if (stat.isSocket()) fs.unlinkSync(socketPath);
+  } catch (error) {
+    if (error?.code !== "ENOENT") auditEvent("server.socket_cleanup_failed", { socketPath, error: error.message });
+  }
 }
 
 function authorized(req) {

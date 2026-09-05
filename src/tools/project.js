@@ -1,37 +1,32 @@
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { commandExists, runCommand, startProcess } from "../lib/exec.js";
-import { denyDeleteMessage, inspectDestructive, queueDestructive } from "../lib/policy.js";
+import { commandExists, runCommand } from "../lib/exec.js";
 import { assertInWorkspace, currentWorkspace, resolveUserPath } from "../lib/paths.js";
+import { registerEnabledTool } from "../lib/tool-registry.js";
 import { fail, json } from "../lib/text.js";
 
-const NAMES = ["test", "lint", "typecheck", "build", "dev"];
+const NAMES = ["test", "lint", "typecheck", "build"];
 
 export function registerProject(server) {
   for (const name of NAMES) {
-    server.registerTool(`project_${name}`, {
+    registerEnabledTool(server, `project_${name}`, {
       title: `Project ${name}`,
-      description: `Detect and run the project's ${name} command across Node, Python, Rust, or Go projects. Pass command to override detection.`,
+      description: `Detect and run the project's ${name} command inside the hardened bridge container. Pass command to override detection; no destructive confirmation tool is exposed in S1.`,
       inputSchema: {
         cwd: z.string().optional(),
-        command: z.string().optional().describe("Explicit command override; destructive commands still require confirmation"),
+        command: z.string().optional().describe("Explicit command override; it runs only inside the contained S1 runtime"),
       },
       annotations: {
-        readOnlyHint: ["test", "lint", "typecheck"].includes(name),
+        readOnlyHint: false,
         destructiveHint: false,
         openWorldHint: false,
       },
     }, async ({ cwd, command } = {}, extra) => {
       try {
-        const root = assertInWorkspace(cwd ? resolveUserPath(cwd) : currentWorkspace() || process.cwd(), { write: name === "build" || name === "dev" });
+        const root = assertInWorkspace(cwd ? resolveUserPath(cwd) : currentWorkspace() || process.cwd(), { write: true });
         const picked = command || detectCommand(root, name);
         if (!picked) return fail(`no ${name} command detected; pass command explicitly`);
-        const inspection = inspectDestructive(picked);
-        if (inspection.destructive) {
-          return fail(denyDeleteMessage(queueDestructive({ kind: name === "dev" ? "process_start" : "shell", command: picked, cwd: root, matches: inspection.matches })));
-        }
-        if (name === "dev") return json(startProcess(picked, { cwd: root }));
         return json({ command: picked, ...(await runCommand(picked, { cwd: root, timeoutMs: 300_000, signal: extra?.signal })) });
       } catch (error) {
         return fail(error.message);

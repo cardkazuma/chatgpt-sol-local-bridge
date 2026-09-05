@@ -5,6 +5,7 @@ import { AUDIT_FILE, MAX_CONCURRENT_TOOLS, ensureStateDirs } from "./config.js";
 import { nowIso, redact } from "./text.js";
 
 const MAX_AUDIT_BYTES = 10 * 1024 * 1024;
+const MAX_ROTATED_AUDIT_FILES = 3;
 let lastHash;
 let activeTools = 0;
 
@@ -68,8 +69,16 @@ function rotateIfNeeded() {
   try {
     const stat = fs.statSync(AUDIT_FILE);
     if (stat.size < MAX_AUDIT_BYTES) return;
-    const rotated = path.join(path.dirname(AUDIT_FILE), `bridge-${Date.now()}.jsonl`);
+    const rotated = path.join(path.dirname(AUDIT_FILE), `bridge-${Date.now()}-${crypto.randomBytes(4).toString("hex")}.jsonl`);
     fs.renameSync(AUDIT_FILE, rotated);
+    const rotatedFiles = fs.readdirSync(path.dirname(AUDIT_FILE))
+      .filter((name) => /^bridge-\d+-[0-9a-f]+\.jsonl$/.test(name))
+      .map((name) => {
+        const file = path.join(path.dirname(AUDIT_FILE), name);
+        return { file, mtime: fs.statSync(file).mtimeMs };
+      })
+      .sort((a, b) => b.mtime - a.mtime);
+    for (const item of rotatedFiles.slice(MAX_ROTATED_AUDIT_FILES)) fs.unlinkSync(item.file);
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }

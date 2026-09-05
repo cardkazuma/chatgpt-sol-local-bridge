@@ -1,65 +1,153 @@
-# Security model
+# S6 security model
 
-## Trust assumptions
+The S1 model below remains the foundation. S6 adds one host-side remote-write
+authority: the controller may source only private `cardkazuma/homelab` and
+publish only the active manager-generated S6 branch. S6 creates no dedicated
+credential and has not yet performed a real GitHub clone/push.
 
-The bridge is a high-authority local agent. Its MCP caller, local user account, configured workspaces, optional browser profile, and optional Codex CLI are all trusted to the extent described here.
+## Primary boundary
 
-The no-delete layer prevents common accidental destructive actions and creates a reviewable human-confirmation step. It is not a kernel/OS security boundary. Generic shell access, project scripts, browser sessions, interpreters, and delegated agents can express side effects in ways no regex can enumerate.
+The container, not shell-command inspection, is the primary safety boundary.
+The runtime is non-root (`10001:10001`), read-only at its image root, drops all
+Linux capabilities, enables `no-new-privileges`, and bounds CPU, memory, PIDs,
+and `/tmp`/`/state` tmpfs space. It has no Docker socket, host namespace,
+device, home-directory, credential, `/Volumes`, NAS, or network mount.
 
-For sensitive work, run under a dedicated unprivileged OS account in a VM/container or snapshot-capable workspace, with explicit filesystem/network policy and no production credentials.
+Only these host paths are bind-mounted by the reviewed Compose model:
 
-## Authority controls
+1. one disposable repository at `/workspace/repo`, read/write;
+2. that repository's `.git/config`, read-only;
+3. its reviewed `.githooks` directory, read-only; and
+4. its reviewed pre-commit policy helper, read-only.
 
-- `WORKSPACE_ROOTS` is configured outside MCP; only the dedicated `BRIDGE_SCRATCH_DIR` is added automatically.
-- Bridge approvals, audit logs, process metadata, and state are not included in file-tool roots.
-- `workspace_add_root` is disabled unless `ALLOW_TOOL_ROOT_REGISTRATION=true`.
-- Existing and not-yet-created paths are canonicalized component-by-component through real parents; dangling/static symlink escapes are rejected.
-- JavaScript pathname checks cannot eliminate hostile same-workspace TOCTOU races; use an OS sandbox/native `openat`-style helper when untrusted local processes can mutate path ancestors concurrently.
-- Symlink escapes and string-prefix collisions are rejected.
-- OS/credential paths such as `.ssh`, `.aws`, `.kube`, keychains, `/etc`, system directories, and Windows credential storage are denied.
-- `process_stop` accepts only bridge-created stable IDs and verifies process identity to reduce PID-reuse risk.
+The operator must provide those interpolation values from a disposable
+fixture. The Compose file cannot protect an operator who replaces it with
+different mounts or grants Docker privileges.
 
-## Destructive approvals
+## MCP exposure
 
-Blocked actions produce an exact, hash-bound, single-use token with an expiry. `confirm_destructive` executes the stored operation, not new arguments supplied during confirmation.
+The S5 base Compose model is parsed against the committed 27-name catalog;
+the S6 controller override is parsed against the exact 28-name catalog. Every
+registration site, including retained upstream desktop code, goes through the
+same registry gate. Unknown names fail closed, and disabled tools are absent
+from `tools/list` rather than returning a runtime permission error.
 
-Modes:
+S6 adds only `git_publish_branch` to the S5 set. It does not expose upstream
+`git_run`, `git_push`, `git_fetch`, arbitrary Git remotes/refspecs, force/delete
+operations, GitHub API, PR, or merge. S1 exposes policy, workspace, structured
+files, read-only Git, selected local Git writes, four project commands,
+contained `repo_shell`, bridge-owned process supervision, and bounded health.
+It does not expose `codex_run`, root registration, destructive
+confirmation, browser/CDP, desktop/input/screen/audio/clipboard tools, web
+fetch, Office, scheduler, Penpot, NAS, Docker, SSH, or broad host-system
+tools.
 
-- `deny` (code default): previews may be created but destructive execution is disabled.
-- `chat`: matches the original workflow; the model asserts that the human explicitly said yes.
-- `external`: calls an absolute, non-symlink `APPROVAL_VERIFIER_COMMAND` pinned by `APPROVAL_VERIFIER_SHA256`, with `verify <token> <fingerprint>`. That verifier must query an independently controlled human-approval channel and expose no approval-creation operation to the bridge account.
+## Structured path policy
 
-A same-user file or approval CLI is not independent because unrestricted shell authority could invoke it. Neither mode replaces backups/snapshots.
+Structured file and workspace operations canonicalize paths before authority
+checks, reject symlink escapes, and require the path to remain inside the
+registered workspace. They also reject repository-ignored paths and sensitive
+names/classes including `.env`, `db.env`, private-key material,
+`secrets.yaml`, `.storage`, databases, runtime/log/credential directories,
+credential-bearing logs, and backup artifacts. Directory listing, tree,
+snapshot, and search use the same visibility check.
 
-## Network controls
+This policy is intentionally limited to structured tools. An arbitrary shell
+command can inspect or mutate files in the container image and the writable
+disposable workspace; it cannot thereby gain host paths that were not mounted.
 
-`web_fetch` permits only HTTP(S), rejects URL-embedded credentials, bounds response size, revalidates redirects, and blocks private/link-local/special addresses unless explicitly allowed. Use `WEB_FETCH_ALLOW_HOSTS` instead of global `ALLOW_PRIVATE_NETWORK=true` where possible.
+## Git policy
 
-`dom_cdp`, accessibility, low-level input, and window tools are intentionally high-risk and marked destructive to the MCP client. Keyword gates catch obvious Delete/Trash/Close actions, but coordinate clicks, script evaluation, and key input cannot be semantically proven safe. A signed-in browser profile contains sensitive sessions; use a dedicated profile whenever feasible.
+The structured Git API has no generic command or remote operation. It uses
+fixed local commands for status/diff/log, branch create/switch, selected-file
+staging, and commit. Path arguments are literal, workspace-relative, and
+validated; force, amend, rebase, reset, restore, clean, worktree, clone,
+push/fetch, remote mutation, and config mutation are not represented.
 
-## MCP listener
+`git_commit` requires the exact reviewed executable `.githooks/pre-commit`, the
+exact reviewed policy-helper hash, and `core.hooksPath=.githooks`. The Compose
+mounts for Git config, hooks, and policy are read-only. The policy helper also
+rejects staged ignored/sensitive paths and staged symlinks.
 
-- Default: `127.0.0.1:8765`.
-- Non-loopback binds are refused. External exposure must use a separately reviewed TLS/auth proxy while the bridge remains loopback-only.
-- Host-header validation protects loopback use from DNS rebinding.
-- `MCP_TOKEN` is useful for direct local clients only after verifying that your tunnel profile supplies the same Authorization header. The documented no-auth local tunnel profile assumes loopback trust.
+This does not claim that arbitrary `repo_shell` can make a disposable Git
+checkout governance-proof: a shell can attempt `--no-verify` or other Git
+flags inside that disposable checkout. S1 contains that trust boundary by
+making the checkout disposable, isolating its mounts, removing network access,
+and exposing no such operation as a structured MCP tool.
 
-## Secrets
+## Credentials and network
 
-Service installers load `CONTROL_PLANE_API_KEY` from a regular, non-symlink, user-owned secret file. Unix permissions must be `0600`; Windows setup applies a user-only ACL. Secrets are not embedded in plist/unit/task command lines, and audit arguments redact token/password/key-like fields.
+The Compose environment contains no OpenAI tunnel key, GitHub credential,
+Codex configuration, SSH key, NAS credential, or normal-user secret. Child
+processes receive a small environment allowlist; the server also removes any
+inherited control-plane key before tool registration. Runtime networking is
+disabled rather than filtered by URL or command patterns.
 
-The tunnel control-plane key is excluded from the MCP server environment. The runtime file is still readable by the same OS account, so unrestricted shell authority can reach it by path; use a separate tunnel identity/account, OS sandbox, or credential broker when that threat matters. Shell/project/Codex children receive a filtered environment: secret-like names (`*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `*_KEY`, credentials, and known provider keys) are removed by default. Use `TOOL_ENV_ALLOWLIST` only for values a project genuinely requires, or `TOOL_ENV_INHERIT_SECRETS=true` only after accepting the broader exposure. A credential broker remains preferable to long-lived environment secrets.
+The default Compose model publishes no port. The optional `MCP_TOKEN` is not
+set by that model; do not publish the unauthenticated endpoint or use a
+different transport without a separate review.
 
-## Audit
+## S6 remote-write addendum
 
-Tool start/completion/failure events are redacted and hash-chained in JSONL under:
+The remote-write threat model treats `repo_shell` and candidate repository
+content as malicious. A valid local commit is not publish authority: the host
+broker independently checks a live manager-owned `s6-...` session, exact
+`homelab` source/origin, exact `bridge/s6/<same-session-id>` branch and remote
+ref, attached HEAD, full non-shallow history, clean worktree/index/ignored set,
+recorded canonical base ancestry, linear non-merge history, no symlink or
+submodule tree entries, and the authoritative shared path policy. Every
+unpublished commit requires an attestation from the structured `git_commit`
+path; a shell `git commit --no-verify` is unpublishable. Workflow files,
+`.githooks/**`, the policy helper, and `.gitmodules` fail closed for S6.
 
-```text
-~/.chatgpt-sol-local-bridge/audit/
-```
+Only this remote ref is possible:
+`refs/heads/bridge/s6/<same-session-id>`. The first write requires the ref to be
+absent unless owned by the same recorded session. Later writes require the
+recorded prior SHA and fast-forward ancestry. The broker has no force,
+force-with-lease, wildcard, deletion, alternate remote, caller refspec, GitHub
+API, PR, or merge path. It reads the remote SHA back and persists/returns only
+sanitized metadata and evidence.
 
-The chain helps detect accidental or offline edits but is not tamper-proof against a malicious process running as the same user. Export logs to an external append-only collector for stronger evidence.
+S6 reuses the Mac's existing developer GitHub HTTPS authentication through
+Git-native credential delegation. The observed normal Git mechanism is the
+Apple `osxkeychain` helper installed by Command Line Tools. Before delegation,
+the broker verifies the fixed executable is root-owned, executable,
+non-symlinked, and Apple-signed with the reviewed identifier/team. Credentialed
+Git uses a manager-owned HOME/XDG tree, `GIT_CONFIG_NOSYSTEM=1`, explicit null
+system/global configuration, disabled prompts/askpass/SSH, an empty helper
+reset, and then only the fixed HTTPS GitHub helper. Normal-user Git config and
+home are not exposed. Git invokes the helper through the credential protocol;
+the broker never retrieves, stores, copies, logs, or audits the credential
+value. Offline tests use synthetic helpers only.
 
-## Reporting
+The bridge container remains `network_mode: none`, credential-free, non-root,
+read-only-rootfs, capability-dropped, and no-new-privileges. A fixed per-session
+Unix socket carries only an in-memory capability and fixed register/attest/
+empty-input publish messages. The host broker is not a shell, HTTP proxy,
+generic Git proxy, or credential helper. Its credential-delegating Git subprocesses
+set `core.hooksPath` and `GIT_TEMPLATE_DIR` to separate manager-owned, empty,
+private directories; they also ignore system/global configuration and reject
+repository aliases, filters, credential settings, hook paths, and related Git
+configuration before enabling the fixed helper. The normal disposable
+workspace still uses the reviewed pre-commit hook for structured local commits.
+The `S6 credential-time Git invocations isolate hooks, templates, and
+repository config` regression exercises malicious repository/template/global
+hooks and configuration under a synthetic trusted-helper delegation.
 
-Do not file live credentials, tunnel IDs paired with keys, private logs, or sensitive tool outputs in a public issue. Revoke exposed Platform keys immediately.
+The current private personal GitHub repository has no Rulesets or branch
+protection in the available plan. That is an explicit residual, not an
+assumption: fixed repository/namespace/graph validation in the host broker is
+mandatory. A concurrent remote movement between the broker's read and Git's
+own update negotiation remains a transport-level TOCTOU residual because
+force-with-lease and GitHub API operations are outside this gate; receipt and
+read-back mismatches fail closed and are surfaced for recovery review.
+
+## Residual trust
+
+The Docker daemon, host kernel, pinned base image, dependency registry at build
+time, Compose file, and operator-selected disposable mount paths remain
+trusted inputs. A Docker privilege, host bind, socket, network, or credential
+added outside this repository defeats the intended boundary. Container escape
+or kernel vulnerabilities are outside the S1 claim. The proof demonstrates
+host-path containment on the local Docker runtime; it is not a NAS validation
+or a claim of protection against a compromised host or Docker daemon.

@@ -1,0 +1,61 @@
+services:
+  bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        UPSTREAM_COMMIT: 3c7b0c0fffa0e04f4533f871ece3da0064cf6620
+    platform: linux/amd64
+    image: chatgpt-sol-local-bridge:s1-pinned
+    user: "10001:10001"
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    network_mode: none
+    cpus: "1.0"
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 128
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=1777
+      - /state:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=700
+    environment:
+      NODE_ENV: production
+      HOST: 127.0.0.1
+      PORT: "8765"
+      BRIDGE_HARDENED: "true"
+      BRIDGE_STATE_DIR: /state
+      BRIDGE_SCRATCH_DIR: /state/scratch
+      WORKSPACE_ROOTS: /workspace/repo
+      DEFAULT_WORKSPACE: /workspace/repo
+      INCLUDE_COMMON_WORKSPACE_ROOTS: "false"
+      INCLUDE_SCRATCH_ROOT: "false"
+      ALLOW_TOOL_ROOT_REGISTRATION: "false"
+      DESTRUCTIVE_APPROVAL_MODE: deny
+      ALLOW_PRIVATE_NETWORK: "false"
+      ALLOW_CROSS_ORIGIN_REDIRECTS: "false"
+      TOOL_ENV_INHERIT_SECRETS: "false"
+      ENABLED_TOOLS: bridge_instructions,workspace_list,workspace_open,workspace_tree,workspace_snapshot,read_file,search_text,write_file,apply_patch,edit_file,git_status,git_diff,git_log,git_branch_create,git_branch_switch,git_stage,git_commit,project_test,project_lint,project_typecheck,project_build,repo_shell,process_start,process_list,process_logs,process_stop,health
+    volumes:
+      # The only writable host mount is a disposable repository/workspace.
+      - type: bind
+        source: ${BRIDGE_WORKSPACE:?set BRIDGE_WORKSPACE to a disposable repository}
+        target: /workspace/repo
+        read_only: false
+      # Git governance inputs are immutable to the bridge process and shell.
+      - type: bind
+        source: ${BRIDGE_GIT_CONFIG:?set BRIDGE_GIT_CONFIG to the disposable repo .git/config}
+        target: /workspace/repo/.git/config
+        read_only: true
+      - type: bind
+        source: ${BRIDGE_GITHOOKS:?set BRIDGE_GITHOOKS to the disposable repo .githooks directory}
+        target: ${BRIDGE_GITHOOKS_TARGET:-/workspace/repo/.githooks}
+        read_only: true
+      - type: bind
+        source: ${BRIDGE_POLICY_FILE:?set BRIDGE_POLICY_FILE to the disposable repo pre-commit policy}
+        target: ${BRIDGE_POLICY_TARGET:-/workspace/repo/scripts/pre-commit-policy.mjs}
+        read_only: true
+    command: ["node", "/opt/bridge/src/server.js"]
