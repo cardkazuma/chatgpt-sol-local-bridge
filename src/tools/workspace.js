@@ -2,9 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { z } from "zod";
-import { loadState, saveState, workspaceRoots } from "../lib/config.js";
+import { BRIDGE_PROFILE, loadState, saveState, workspaceRoots } from "../lib/config.js";
 import { assertStructuredPath, canonicalPath, currentWorkspace, resolveUserPath, walkTree } from "../lib/paths.js";
-import { registerEnabledTool } from "../lib/tool-registry.js";
+import { hostWorkspaceIndex, registerEnabledTool } from "../lib/tool-registry.js";
 import { fail, json, ok } from "../lib/text.js";
 
 export function registerWorkspace(server) {
@@ -12,7 +12,16 @@ export function registerWorkspace(server) {
     title: "List workspaces",
     description: "List registered project roots and the current workspace.",
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
-  }, async () => json({ current: currentWorkspace() || null, roots: workspaceRoots().filter(isVisibleRoot) }));
+  }, async () => {
+    if (BRIDGE_PROFILE !== "host") return json({ current: currentWorkspace() || null, roots: workspaceRoots().filter(isVisibleRoot) });
+    try {
+      const workspaces = hostWorkspaceIndex.list().map(({ id, project, objective, branch, baseRef, baseHead, observedHead, pr, checkpoint, createdAt, updatedAt }) => ({
+        id, project, objective, branch, baseRef, baseHead, observedHead, pr, checkpoint, createdAt, updatedAt,
+      }));
+      return json({ catalog: "daily-use-v1", workspaces });
+    }
+    catch (error) { return fail(`${error.message}; recovery candidates: ${JSON.stringify(hostWorkspaceIndex.recoverCandidates())}`); }
+  });
 
   registerEnabledTool(server, "workspace_open", {
     title: "Open workspace",
@@ -31,6 +40,55 @@ export function registerWorkspace(server) {
       return fail(error.message);
     }
   });
+
+  registerEnabledTool(server, "workspace_create", {
+    title: "Create host workspace",
+    description: "Create a durable task-owned Git worktree from an explicitly selected existing repository.",
+    inputSchema: {
+      repositoryPath: z.string(), branch: z.string().min(1).max(200), base: z.string().optional(),
+      objective: z.string().min(1).max(2_000), project: z.string().max(200).optional(),
+      scope: z.array(z.string().max(500)).max(100).optional(),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  }, async (args) => {
+    try { return json(hostWorkspaceIndex.create(args)); } catch (error) { return fail(error.message); }
+  });
+
+  registerEnabledTool(server, "workspace_resume", {
+    title: "Resume host workspace",
+    description: "Resume by stable workspace ID after refreshing actual Git state and repository instruction locations.",
+    inputSchema: { workspaceId: z.string().regex(/^ws_[a-f0-9]{16}$/) },
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+  }, async ({ workspaceId }) => {
+    try { return json(hostWorkspaceIndex.resume(workspaceId)); } catch (error) { return fail(error.message); }
+  });
+
+  registerEnabledTool(server, "workspace_status", {
+    title: "Host workspace status",
+    description: "Read stored locator metadata together with fresh Git state.",
+    inputSchema: { workspaceId: z.string().regex(/^ws_[a-f0-9]{16}$/) },
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+  }, async ({ workspaceId }) => {
+    try { return json(hostWorkspaceIndex.status(workspaceId)); } catch (error) { return fail(error.message); }
+  });
+
+  registerEnabledTool(server, "workspace_checkpoint", {
+    title: "Checkpoint host workspace",
+    description: "Persist a bounded sanitized checkpoint, optional PR number, and managed process references.",
+    inputSchema: {
+      workspaceId: z.string().regex(/^ws_[a-f0-9]{16}$/), summary: z.string().min(1).max(2_000),
+      pr: z.number().int().positive().optional(), processIds: z.array(z.string()).max(100).optional(),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  }, async ({ workspaceId, ...checkpoint }) => {
+    try { return json(hostWorkspaceIndex.checkpoint(workspaceId, checkpoint)); } catch (error) { return fail(error.message); }
+  });
+
+  registerEnabledTool(server, "workspace_recover", {
+    title: "Recover workspace locators",
+    description: "Read Git worktrees beneath the host-profile root without rewriting missing or corrupt metadata.",
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+  }, async () => json({ candidates: hostWorkspaceIndex.recoverCandidates(), metadataChanged: false }));
 
   registerEnabledTool(server, "workspace_tree", {
     title: "Workspace tree",

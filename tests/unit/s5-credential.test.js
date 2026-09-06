@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { installKeychainItem, withTunnelClientEnvFile, keychainStatus } from "../../scripts/s5-credential.mjs";
+import { installKeychainItem, withTunnelClientEnvFile, keychainStatus, keychainUsabilityStatus } from "../../scripts/s5-credential.mjs";
 import { appendLine } from "../../scripts/s5-runtime.mjs";
 
 const base = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-s5-credential-test-"));
@@ -48,6 +48,16 @@ test("credential custody retains the controller input channel for Keychain confi
     assert.equal(fs.readFileSync(envFile, "utf8"), "CONTROL_PLANE_API_KEY=confirmation-fixture\n");
   });
   assert.equal(fs.readdirSync(tempRoot).length, 0);
+});
+
+test("Keychain usability probe distinguishes a present but non-readable item without returning its value", () => {
+  const blocked = path.join(base, "security-blocked");
+  fs.writeFileSync(blocked, "#!/bin/sh\ncase \" $* \" in *' -w '*) exit 36;; *) exit 0;; esac\n", { mode: 0o700 });
+  assert.deepEqual(keychainUsabilityStatus({ securityBin: blocked, platform: "darwin" }), {
+    available: false,
+    present: true,
+    reason: "dedicated Keychain item is locked or access-controlled",
+  });
 });
 
 test("credential installation uses the dedicated item identity", () => {

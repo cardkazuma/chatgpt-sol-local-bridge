@@ -2,18 +2,23 @@ import "dotenv/config";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EXPECTED_TOOL_NAMES, parseEnabledTools } from "../tool-contract.js";
+import { catalogVersionForProfile, parseEnabledTools, toolCatalogForProfile } from "../tool-contract.js";
 import { normalizeHost } from "./net.js";
 
 const HOME = os.homedir();
-const DEFAULT_STATE_DIR = path.join(HOME, ".chatgpt-sol-local-bridge");
+export const BRIDGE_PROFILE = readEnum("BRIDGE_PROFILE", "legacy", ["legacy", "host"]);
+const DEFAULT_STATE_DIR = BRIDGE_PROFILE === "host"
+  ? path.join(HOME, ".chatgpt-sol-local-bridge", "host-v1")
+  : path.join(HOME, ".chatgpt-sol-local-bridge");
 
 export const APP_NAME = "chatgpt-sol-local-bridge";
-export const APP_VERSION = "1.0.0-s1";
+export const APP_VERSION = BRIDGE_PROFILE === "host" ? "1.1.0-daily-use.1" : "1.0.0-s1";
 export const STATE_DIR = path.resolve(expandHome(process.env.BRIDGE_STATE_DIR || DEFAULT_STATE_DIR));
 export const STATE_FILE = path.join(STATE_DIR, "state.json");
 export const LOG_DIR = path.join(STATE_DIR, "logs");
 export const PROC_DIR = path.join(STATE_DIR, "processes");
+export const HOST_WORKSPACE_INDEX_FILE = path.join(STATE_DIR, "workspaces.json");
+export const HOST_WORKTREE_ROOT = path.resolve(expandHome(process.env.HOST_WORKTREE_ROOT || path.join(STATE_DIR, "worktrees")));
 export const CAPTURE_DIR = path.join(STATE_DIR, "captures");
 export const AUDIT_DIR = path.join(STATE_DIR, "audit");
 export const AUDIT_FILE = path.join(AUDIT_DIR, "bridge.jsonl");
@@ -51,8 +56,10 @@ export const WEB_FETCH_ALLOW_HOSTS = splitList(process.env.WEB_FETCH_ALLOW_HOSTS
 export const TOOL_ENV_INHERIT_SECRETS = readBoolean("TOOL_ENV_INHERIT_SECRETS", false);
 export const TOOL_ENV_ALLOWLIST = new Set(splitRawList(process.env.TOOL_ENV_ALLOWLIST || ""));
 export const DEFAULT_WORKSPACE = process.env.DEFAULT_WORKSPACE ? path.resolve(expandHome(process.env.DEFAULT_WORKSPACE)) : "";
-export const ENABLED_TOOLS = parseEnabledTools(process.env.ENABLED_TOOLS);
-export const ENABLED_TOOL_NAMES = Object.freeze(EXPECTED_TOOL_NAMES.filter((name) => ENABLED_TOOLS.has(name)));
+export const TOOL_CATALOG_VERSION = catalogVersionForProfile(BRIDGE_PROFILE);
+export const PROFILE_TOOL_CATALOG = toolCatalogForProfile(BRIDGE_PROFILE);
+export const ENABLED_TOOLS = parseEnabledTools(process.env.ENABLED_TOOLS, BRIDGE_PROFILE);
+export const ENABLED_TOOL_NAMES = Object.freeze(PROFILE_TOOL_CATALOG.map(({ name }) => name).filter((name) => ENABLED_TOOLS.has(name)));
 
 if (HARDENED_CONTAINER && DESTRUCTIVE_APPROVAL_MODE !== "deny") {
   throw new Error("BRIDGE_HARDENED requires DESTRUCTIVE_APPROVAL_MODE=deny");

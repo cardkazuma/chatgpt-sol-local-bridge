@@ -1,4 +1,14 @@
-# chatgpt-sol-local-bridge — S6 offline bridge implementation
+# chatgpt-sol-local-bridge — legacy S6 and daily-use host profiles
+
+The approved `daily-use-v1` host profile is implemented for native, normal-user
+development in explicit task-owned Git worktrees. It is policy-governed rather
+than container-contained, carries stable workspace IDs across calls, preserves
+dirty/unpublished work across restart, uses normal developer Git/gh/SSH/package
+authentication internally, and strips Bridge/tunnel credentials from tool
+children. Its native startup package is render-only until the separately
+approved W5 cutover. See [Host daily use](docs/HOST_DAILY_USE.md).
+
+The historical S1–S6 profile below remains unchanged and is selected by default.
 
 This local fork is the reviewed S1–S6 bridge for ordinary repository work in a
 disposable, non-root Docker container. S6 adds a host-only broker that can,

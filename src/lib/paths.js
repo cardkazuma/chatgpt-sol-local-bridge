@@ -3,11 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import {
+  BRIDGE_PROFILE,
   configuredDenyPaths,
   expandHome,
   loadState,
   workspaceRoots,
 } from "./config.js";
+import { activeHostWorkspace } from "./host-workspaces.js";
 
 const HOME = os.homedir();
 const IGNORED_NAMES = new Set([".git", "node_modules", ".DS_Store", ".venv", "__pycache__"]);
@@ -44,6 +46,7 @@ export function resolveUserPath(input, cwd) {
 }
 
 export function currentWorkspace() {
+  if (BRIDGE_PROFILE === "host" && activeHostWorkspace()) return activeHostWorkspace().worktreePath;
   const current = loadState().currentWorkspace || "";
   if (!current) return "";
   let canonical;
@@ -114,7 +117,7 @@ export function assertAllowed(target, { write = false } = {}) {
   if (sensitiveReason) throw new Error(`refusing secret-sensitive or runtime path (${sensitiveReason}): ${canonical}`);
 
   if (write) {
-    const writeRoots = workspaceRoots().map((root) => {
+    const writeRoots = effectiveRoots().map((root) => {
       try { return canonicalPath(root, { forWrite: true }); } catch { return path.resolve(root); }
     });
     if (!writeRoots.some((root) => isWithin(canonical, root))) {
@@ -140,7 +143,7 @@ export function assertInWorkspace(target, { write = false } = {}) {
   assertLexicallyInWorkspace(target, "registered");
   const canonical = assertAllowed(target, { write });
   const allowed = [
-    ...workspaceRoots(),
+    ...effectiveRoots(),
     currentWorkspace(),
   ].filter(Boolean).map((root) => {
     try { return canonicalPath(root, { forWrite: true }); } catch { return path.resolve(root); }
@@ -154,7 +157,7 @@ export function assertInWorkspace(target, { write = false } = {}) {
 
 function assertLexicallyInWorkspace(target, scope) {
   const requested = path.resolve(target);
-  const roots = workspaceRoots();
+  const roots = effectiveRoots();
   const lexicalAllowed = roots.some((root) => isWithin(requested, path.resolve(root)));
   const allowed = roots.map((root) => {
     try { return canonicalPath(root, { forWrite: true }); } catch { return path.resolve(root); }
@@ -168,6 +171,11 @@ function assertLexicallyInWorkspace(target, scope) {
   if (!allowed.some((root) => isWithin(candidate, root))) {
     throw new Error(`path is outside ${scope} workspace roots: ${requested}\nConfigure WORKSPACE_ROOTS explicitly; tool-driven root registration is not available in S1.`);
   }
+}
+
+function effectiveRoots() {
+  const active = activeHostWorkspace();
+  return [...workspaceRoots(), ...(active ? [active.worktreePath] : [])];
 }
 
 // Structured file/workspace tools add a second repository-aware check.  The
