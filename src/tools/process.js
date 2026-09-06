@@ -22,7 +22,7 @@ export function registerProcess(server) {
   }, async ({ command, cwd, timeoutMs }, extra) => {
     try {
       const root = cwd ? assertInWorkspace(resolveUserPath(cwd), { write: true }) : currentWorkspace();
-      if (!root) return fail("no workspace — call workspace_open first or pass cwd");
+      if (!root) return fail(BRIDGE_PROFILE === "host" ? "no explicit host workspace" : "no workspace — call workspace_open first or pass cwd");
       return json(await runCommand(command, { cwd: root, timeoutMs, signal: extra?.signal }));
     } catch (error) {
       return fail(error.message);
@@ -37,7 +37,7 @@ export function registerProcess(server) {
   }, async ({ command, cwd }) => {
     try {
       const root = cwd ? assertInWorkspace(resolveUserPath(cwd), { write: true }) : currentWorkspace();
-      if (!root) return fail("no workspace — call workspace_open first or pass cwd");
+      if (!root) return fail(BRIDGE_PROFILE === "host" ? "no explicit host workspace" : "no workspace — call workspace_open first or pass cwd");
       return json(startProcess(command, { cwd: root }));
     } catch (error) {
       return fail(error.message);

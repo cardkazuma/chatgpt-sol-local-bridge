@@ -13,7 +13,7 @@ import { BRIDGE_PROFILE } from "../lib/config.js";
 export function registerGit(server) {
   registerEnabledTool(server, "git_status", {
     title: "Git status",
-    description: "Show local Git status for the current disposable workspace; remote state is never queried.",
+    description: "Show local Git status for the explicit Git-backed workspace; remote state is never queried.",
     inputSchema: { cwd: z.string().optional() },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
   }, async ({ cwd } = {}, extra) => runGitRead(["status", "--short", "--branch", "--untracked-files=no"], cwd, extra?.signal));

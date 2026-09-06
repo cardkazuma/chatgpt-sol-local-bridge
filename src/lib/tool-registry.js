@@ -3,7 +3,7 @@ import { BRIDGE_PROFILE, ENABLED_TOOLS, HOST_WORKSPACE_INDEX_FILE, HOST_WORKTREE
 import { HostWorkspaceIndex, withHostWorkspace } from "./host-workspaces.js";
 
 export const hostWorkspaceIndex = new HostWorkspaceIndex({ stateFile: HOST_WORKSPACE_INDEX_FILE, worktreeRoot: HOST_WORKTREE_ROOT });
-const CONTEXT_FREE = new Set(["bridge_instructions", "workspace_list", "workspace_create", "workspace_resume", "workspace_status", "workspace_checkpoint", "workspace_recover", "health"]);
+const CONTEXT_FREE = new Set(["bridge_instructions", "workspace_list", "workspace_create", "workspace_attach", "workspace_resume", "workspace_status", "workspace_checkpoint", "workspace_recover", "health"]);
 
 // All registration sites go through this gate.  A disabled implementation is
 // not registered and therefore is absent from MCP tools/list, rather than
