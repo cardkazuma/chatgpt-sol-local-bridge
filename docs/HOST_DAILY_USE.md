@@ -94,7 +94,11 @@ recovery state separately. The Bridge `/readyz` owns profile/catalog truth;
 tunnel health must additionally require a successful control-plane poll during
 W5 acceptance.
 
-## W5 activation and rollback plan — approval required
+## Accepted W5 activation and rollback plan
+
+The following plan is retained as the exact reviewed cutover and rollback
+procedure. Activation is complete; do not rerun the cutover steps as routine
+startup.
 
 Before activation, refresh both repositories and verify the implementation PR
 head/CI/review. Privately inventory the exact old Bridge/tunnel/relay/broker
@@ -120,21 +124,23 @@ existing runbook and credentials, refresh the old app catalog if required, and
 verify its historical readiness. Do not reset coordinator data, rotate/recreate
 Keychain material, delete candidate work or use S5/S6 reaping as host recovery.
 
-Card must separately approve exactly: durable copy/install of the candidate and
-workstation inventory writeback; stopping the old owned runtime/tunnel and
+Card's recorded approvals covered exactly: durable copy/install of the candidate
+and workstation inventory writeback; stopping the old owned runtime/tunnel and
 bootstrapping the two new LaunchAgents; the controlled restart and ordinary-Chat
-W5 acceptance; and the mobile test. Any Keychain ACL change, paid dependency,
-web-first limitation or alternate mobile/Remote route is a separate decision.
+W5 acceptance; and the mobile test. They did not authorize any Keychain ACL
+change, paid dependency, web-first limitation or alternate mobile/Remote route.
 
 ## Current feasibility and limits
 
-Verified 2026-09-06 from read-only/local probes: the Mac is Darwin x86_64; the
+Verified before W5 on 2026-09-06 from read-only/local probes: the Mac is Darwin
+x86_64; the
 cached binary and ZIP match the hashes above; `run`, `doctor` and `health`
 expose the required flags; the fixed Keychain item is present and readable
 without an ACL change; Git, gh, Node, Python, SSH and Docker CLI are installed.
-No running ChatGPT desktop application was found in the local app inventory.
-This does not establish iPhone or Safari support, which remains W5/W6 device
-acceptance. No live tunnel handshake was attempted by W1–W4.
+No running ChatGPT desktop application was found in the local app inventory,
+and no live tunnel handshake was attempted by W1–W4. Subsequent W5 first-use
+acceptance established Chrome macOS ordinary Chat, native ChatGPT on iPhone and
+Safari mobile against the active native runtime.
 
 The repository CI uses the explicit target-macOS `test:ci` gate. It excludes only
 the real S7-B coordinator fixture because the accepted private wheel is not
