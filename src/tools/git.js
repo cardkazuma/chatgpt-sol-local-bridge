@@ -8,6 +8,7 @@ import { s6BrokerAttestCommit, s6BrokerConfigured, s6BrokerPreflightCommit, s6Br
 import { registerEnabledTool } from "../lib/tool-registry.js";
 import { fail, json } from "../lib/text.js";
 import { assertGovernedGitPath } from "../../scripts/pre-commit-policy.mjs";
+import { BRIDGE_PROFILE } from "../lib/config.js";
 
 export function registerGit(server) {
   registerEnabledTool(server, "git_status", {
@@ -99,7 +100,9 @@ export function registerGit(server) {
 
   registerEnabledTool(server, "git_commit", {
     title: "Create local Git commit",
-    description: "Commit the existing index with the reviewed .githooks pre-commit hook forced on. Remote and destructive history operations are unavailable.",
+    description: BRIDGE_PROFILE === "host"
+      ? "Commit the existing selected index through the repository's actual configured hooks. No hook bypass is used."
+      : "Commit the existing index with the reviewed .githooks pre-commit hook forced on. Remote and destructive history operations are unavailable.",
     inputSchema: {
       cwd: z.string().optional(),
       message: z.string().min(1).max(4_000),
@@ -134,18 +137,20 @@ export async function commitReviewedIndex({
   root,
   message,
   signal,
-  governanceMode = process.env.BRIDGE_GOVERNANCE_MODE || "s5",
+  governanceMode = BRIDGE_PROFILE === "host" ? "host" : (process.env.BRIDGE_GOVERNANCE_MODE || "s5"),
   brokerConfigured = s6BrokerConfigured,
   preflight = s6BrokerPreflightCommit,
   attest = s6BrokerAttestCommit,
 } = {}) {
   if (!String(message).trim() || String(message).includes("\0")) throw new Error("commit message must be non-empty and contain no NUL bytes");
-  await assertReviewedHooks(root, signal, { mode: governanceMode });
+  if (governanceMode !== "host") await assertReviewedHooks(root, signal, { mode: governanceMode });
   const staged = await stagedPaths(root, signal);
   if (!staged.length) throw new Error("git_commit requires selected staged paths");
-  const deleted = await stagedDeletedPaths(root, signal);
-  if (deleted.length) throw new Error(`git_commit refuses staged deletions: ${deleted.join(", ")}`);
-  for (const value of staged) assertGovernedGitPath({ root, name: value, label: "git_commit" });
+  if (governanceMode !== "host") {
+    const deleted = await stagedDeletedPaths(root, signal);
+    if (deleted.length) throw new Error(`git_commit refuses staged deletions: ${deleted.join(", ")}`);
+    for (const value of staged) assertGovernedGitPath({ root, name: value, label: "git_commit" });
+  }
   if (governanceMode === "s6") {
     if (!brokerConfigured()) throw new Error("S6 structured commits require the manager-owned broker attestation channel");
     try {
@@ -154,7 +159,10 @@ export async function commitReviewedIndex({
       throw new Error(`S6 commit is not publishable before commit: ${error.message}`);
     }
   }
-  const result = await git(["-c", `core.hooksPath=${reviewedHooksPath()}`, "commit", "-m", String(message)], root, signal);
+  const commitArgs = governanceMode === "host"
+    ? ["commit", "-m", String(message)]
+    : ["-c", `core.hooksPath=${reviewedHooksPath()}`, "commit", "-m", String(message)];
+  const result = await git(commitArgs, root, signal);
   if (governanceMode === "s6") {
     const head = await git(["rev-parse", "HEAD"], root, signal);
     if (!head.ok) throw new Error("S6 commit was created but its HEAD could not be attested");
@@ -187,16 +195,19 @@ async function repositoryRoot(cwd, { write = false } = {}) {
 }
 
 async function git(args, root, signal) {
+  const nativeEnvironment = BRIDGE_PROFILE === "host"
+    ? { GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" }
+    : {
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_OPTIONAL_LOCKS: "0",
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_GLOBAL: "/dev/null",
+      };
   return runCommand(["git", "--no-pager", "--literal-pathspecs", "-c", `safe.directory=${root}`, ...args], {
     cwd: root,
     shell: false,
     signal,
-    env: {
-      GIT_TERMINAL_PROMPT: "0",
-      GIT_OPTIONAL_LOCKS: "0",
-      GIT_CONFIG_NOSYSTEM: "1",
-      GIT_CONFIG_GLOBAL: "/dev/null",
-    },
+    env: nativeEnvironment,
   });
 }
 
