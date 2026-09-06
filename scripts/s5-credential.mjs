@@ -22,6 +22,18 @@ export function keychainStatus({ securityBin = SECURITY_BIN, platform = process.
     : { available: false, reason: "dedicated Keychain item is not available" };
 }
 
+/** Probe whether the fixed item is usable without ever returning or capturing its value. */
+export function keychainUsabilityStatus({ securityBin = SECURITY_BIN, platform = process.platform } = {}) {
+  const present = keychainStatus({ securityBin, platform });
+  if (!present.available) return { available: false, present: false, reason: present.reason };
+  const result = spawnSecurity(securityBin, [
+    "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", KEYCHAIN_ACCOUNT, "-w",
+  ], { stdio: "ignore" });
+  return result.status === 0
+    ? { available: true, present: true, reason: "dedicated Keychain item is readable without changing access controls" }
+    : { available: false, present: true, reason: "dedicated Keychain item is locked or access-controlled" };
+}
+
 /**
  * Store the existing operator-supplied key in the dedicated item.  `-w` is
  * deliberately the final security argument so macOS prompts on the TTY
