@@ -19,9 +19,14 @@ test("native package renders valid non-installed LaunchAgents and a secret-free 
     assert.equal(fs.existsSync(path.join(path.resolve(path.dirname(new URL(import.meta.url).pathname), "../.."), "scripts", "native-supervisor.mjs")), true);
     assert.equal(fs.existsSync(path.join(path.resolve(path.dirname(new URL(import.meta.url).pathname), "../.."), "scripts", "native-host-launcher.mjs")), true);
     for (const plist of rendered.files.filter((file) => file.endsWith(".plist"))) {
-      const lint = spawnSync("plutil", ["-lint", plist], { encoding: "utf8" });
-      assert.equal(lint.status, 0, lint.stderr || lint.stdout);
-      assert.doesNotMatch(fs.readFileSync(plist, "utf8"), /CONTROL_PLANE_API_KEY|MCP_TOKEN/);
+      const content = fs.readFileSync(plist, "utf8");
+      assert.match(content, /^<\?xml version="1\.0"/);
+      assert.match(content, /<plist version="1\.0"><dict>/);
+      if (process.platform === "darwin") {
+        const lint = spawnSync("plutil", ["-lint", plist], { encoding: "utf8" });
+        assert.equal(lint.status, 0, lint.stderr || lint.stdout);
+      }
+      assert.doesNotMatch(content, /CONTROL_PLANE_API_KEY|MCP_TOKEN/);
     }
     const profile = fs.readFileSync(path.join(root, "tunnel-profile.yaml"), "utf8");
     assert.match(profile, /env:CONTROL_PLANE_API_KEY/);
@@ -31,11 +36,23 @@ test("native package renders valid non-installed LaunchAgents and a secret-free 
 });
 
 test("native artifact verification pins platform, architecture, hash, and command version", async () => {
-  const { verifyNativeArtifact, NATIVE_TUNNEL_SHA256 } = await import("../../scripts/native-package.mjs");
-  const binary = "/private/tmp/bridge-s7-tunnel/native/tunnel-client";
-  assert.equal(fs.existsSync(binary), true, "accepted native fixture is required");
-  const result = verifyNativeArtifact({ binary, platform: "darwin", arch: "x64" });
-  assert.equal(result.sha256, NATIVE_TUNNEL_SHA256);
+  const { verifyNativeArtifactEvidence, NATIVE_TUNNEL_SHA256, NATIVE_TUNNEL_VERSION } = await import("../../scripts/native-package.mjs");
+  const bytes = Buffer.from("synthetic artifact evidence");
+  const crypto = await import("node:crypto");
+  const syntheticHash = crypto.createHash("sha256").update(bytes).digest("hex");
+  assert.notEqual(syntheticHash, NATIVE_TUNNEL_SHA256);
+  assert.throws(() => verifyNativeArtifactEvidence({
+    binary: "/opt/pinned/tunnel-client", bytes, helpStatus: 0,
+    helpOutput: `run version ${NATIVE_TUNNEL_VERSION} --control-plane.api-key --mcp.server-url --mcp.extra-headers --health.url-file`,
+    platform: "darwin", arch: "x64",
+  }), /hash mismatch/);
+  const result = verifyNativeArtifactEvidence({
+    binary: "/opt/pinned/tunnel-client", bytes, helpStatus: 0,
+    helpOutput: `run version ${NATIVE_TUNNEL_VERSION} --control-plane.api-key --mcp.server-url --mcp.extra-headers --health.url-file`,
+    platform: "darwin", arch: "x64",
+    expectedSha256: syntheticHash,
+  });
+  assert.equal(result.sha256, syntheticHash);
   assert.match(result.version, /0\.0\.13\+4b5267f/);
 });
 

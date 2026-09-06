@@ -17,16 +17,32 @@ export function verifyNativeArtifact({ binary, platform = process.platform, arch
   const resolved = path.resolve(String(binary || ""));
   const stat = fs.lstatSync(resolved);
   if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o111) === 0) throw new Error("native tunnel artifact must be an executable regular file");
-  const sha256 = crypto.createHash("sha256").update(fs.readFileSync(resolved)).digest("hex");
-  if (sha256 !== NATIVE_TUNNEL_SHA256) throw new Error("native tunnel artifact hash mismatch");
   const help = spawnSync(resolved, ["run", "--help"], { encoding: "utf8", timeout: 15_000 });
-  const output = `${help.stdout || ""}\n${help.stderr || ""}`;
+  return verifyNativeArtifactEvidence({
+    binary: resolved,
+    bytes: fs.readFileSync(resolved),
+    helpStatus: help.status,
+    helpOutput: `${help.stdout || ""}\n${help.stderr || ""}`,
+    platform,
+    arch,
+  });
+}
+
+export function verifyNativeArtifactEvidence({
+  binary, bytes, helpStatus, helpOutput, platform, arch,
+  expectedSha256 = NATIVE_TUNNEL_SHA256,
+  expectedVersion = NATIVE_TUNNEL_VERSION,
+} = {}) {
+  if (platform !== "darwin" || !["x64", "x86_64"].includes(arch)) throw new Error("pinned native tunnel artifact requires Darwin x86_64");
+  const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
+  if (sha256 !== expectedSha256) throw new Error("native tunnel artifact hash mismatch");
+  const output = String(helpOutput || "");
   const version = output.match(/run version ([^\s]+)/)?.[1] || "";
-  if (help.status !== 0 || version !== NATIVE_TUNNEL_VERSION) throw new Error("native tunnel command/version compatibility failed");
+  if (helpStatus !== 0 || version !== expectedVersion) throw new Error("native tunnel command/version compatibility failed");
   for (const flag of ["--control-plane.api-key", "--mcp.server-url", "--mcp.extra-headers", "--health.url-file"]) {
     if (!output.includes(flag)) throw new Error(`native tunnel missing required flag ${flag}`);
   }
-  return { binary: resolved, sha256, version, platform: "darwin", arch: "x86_64" };
+  return { binary: path.resolve(String(binary || "")), sha256, version, platform: "darwin", arch: "x86_64" };
 }
 
 export function renderNativePackage({ outputDir, repoRoot, nodePath, tunnelPath, tunnelId, port = 8765 } = {}) {
