@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { renderNativePackage, SERVER_LABEL, TUNNEL_LABEL, verifyNativeArtifact } from "./native-package.mjs";
+import { nativeStatus, renderNativePackage, SERVER_LABEL, TUNNEL_LABEL, verifyNativeArtifact } from "./native-package.mjs";
 import { keychainUsabilityStatus } from "./s5-credential.mjs";
 
 const [action, ...raw] = process.argv.slice(2);
@@ -19,7 +19,21 @@ if (action === "render") {
   if (action === "status") {
     const loaded = Object.fromEntries(labels.map((label) => [label, spawnSync("launchctl", ["print", `${domain}/${label}`], { stdio: "ignore" }).status === 0]));
     const recovery = Object.fromEntries(["server", "tunnel"].map((component) => [component, readJson(path.join(config.stateRoot, `${component}-recovery.json`))]));
-    console.log(JSON.stringify({ installed: labels.every((label) => fs.existsSync(path.join(process.env.HOME, "Library", "LaunchAgents", `${label}.plist`))), loaded, keychain: keychainUsabilityStatus(), recovery }, null, 2));
+    const components = await nativeStatus({
+      catalogProbe: async () => {
+        try {
+          const response = await fetch(`http://127.0.0.1:${config.port}/readyz`, { signal: AbortSignal.timeout(2_000) });
+          const value = await response.json();
+          return { ready: response.ok && value.ready === true, catalogVersion: value.catalogVersion, reason: response.ok ? "catalog mismatch" : `HTTP ${response.status}` };
+        } catch (error) { return { ready: false, reason: String(error.message).slice(0, 300) }; }
+      },
+      tunnelProbe: async () => {
+        const result = spawnSync(config.tunnelPath, ["health", "--port", "8080", "--json", "--require-control-plane-poll"], { encoding: "utf8", timeout: 5_000 });
+        return { ready: result.status === 0, reason: result.status === 0 ? "ready" : "health/control-plane poll unavailable" };
+      },
+      keychainProbe: keychainUsabilityStatus,
+    });
+    console.log(JSON.stringify({ installed: labels.every((label) => fs.existsSync(path.join(process.env.HOME, "Library", "LaunchAgents", `${label}.plist`))), loaded, components, recovery }, null, 2));
   } else if (action === "stop") {
     for (const label of labels.reverse()) spawnSync("launchctl", ["bootout", `${domain}/${label}`], { stdio: "inherit" });
   } else {

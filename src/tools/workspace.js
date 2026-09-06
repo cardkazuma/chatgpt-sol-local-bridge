@@ -14,7 +14,12 @@ export function registerWorkspace(server) {
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
   }, async () => {
     if (BRIDGE_PROFILE !== "host") return json({ current: currentWorkspace() || null, roots: workspaceRoots().filter(isVisibleRoot) });
-    try { return json({ catalog: "daily-use-v1", workspaces: hostWorkspaceIndex.list() }); }
+    try {
+      const workspaces = hostWorkspaceIndex.list().map(({ id, project, objective, branch, baseRef, baseHead, observedHead, pr, checkpoint, createdAt, updatedAt }) => ({
+        id, project, objective, branch, baseRef, baseHead, observedHead, pr, checkpoint, createdAt, updatedAt,
+      }));
+      return json({ catalog: "daily-use-v1", workspaces });
+    }
     catch (error) { return fail(`${error.message}; recovery candidates: ${JSON.stringify(hostWorkspaceIndex.recoverCandidates())}`); }
   });
 

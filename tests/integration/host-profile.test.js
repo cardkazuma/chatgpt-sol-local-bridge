@@ -44,6 +44,9 @@ test("native host profile completes and resumes an isolated developer workflow",
   assert.equal(tools.tools.some(({ name }) => name === "git_publish_branch"), false);
   const created = JSON.parse(value(await call("workspace_create", { repositoryPath: source, branch: "daily/integration", objective: "host integration" })));
   const id = created.id;
+  const listed = value(await call("workspace_list", {}));
+  assert.doesNotMatch(listed, new RegExp(source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.doesNotMatch(listed, /repositoryPath|worktreePath/);
   value(await call("read_file", { workspaceId: id, path: path.join(created.worktreePath, "README.md") }));
   value(await call("write_file", { workspaceId: id, path: path.join(created.worktreePath, "daily.txt"), content: "daily\n" }));
   assert.match(value(await call("project_test", { workspaceId: id })), /host-test-pass/);

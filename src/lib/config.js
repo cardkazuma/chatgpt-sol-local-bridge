@@ -12,7 +12,7 @@ const DEFAULT_STATE_DIR = BRIDGE_PROFILE === "host"
   : path.join(HOME, ".chatgpt-sol-local-bridge");
 
 export const APP_NAME = "chatgpt-sol-local-bridge";
-export const APP_VERSION = "1.0.0-s1";
+export const APP_VERSION = BRIDGE_PROFILE === "host" ? "1.1.0-daily-use.1" : "1.0.0-s1";
 export const STATE_DIR = path.resolve(expandHome(process.env.BRIDGE_STATE_DIR || DEFAULT_STATE_DIR));
 export const STATE_FILE = path.join(STATE_DIR, "state.json");
 export const LOG_DIR = path.join(STATE_DIR, "logs");

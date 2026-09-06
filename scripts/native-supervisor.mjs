@@ -14,13 +14,14 @@ const attempts = prior && now - prior.windowStartedAt <= 600_000 ? prior.attempt
 if (attempts >= 5) process.exit(0);
 writeRecovery({ version: 1, state: "STARTING", attempts: attempts + 1, windowStartedAt: prior?.windowStartedAt || now, updatedAt: new Date().toISOString() });
 const child = spawn(config.nodePath, [path.join(config.repoRoot, "scripts", "native-host-launcher.mjs"), component, configPath], { cwd: config.repoRoot, stdio: "inherit", shell: false });
-for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => child.kill(signal));
+let stopping = false;
+for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { stopping = true; child.kill(signal); });
 child.once("error", (error) => {
   writeRecovery({ version: 1, state: "DEGRADED", attempts: attempts + 1, windowStartedAt: prior?.windowStartedAt || now, reason: String(error.message).slice(0, 500), updatedAt: new Date().toISOString() });
   process.exitCode = attempts + 1 >= 5 ? 0 : 1;
 });
 child.once("exit", (code, signal) => {
-  if (code === 0 && !signal) {
+  if (stopping) {
     try { fs.unlinkSync(recoveryFile); } catch {}
     process.exitCode = 0;
     return;
