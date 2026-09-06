@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
+import { createServer } from "node:net";
 
 test("native package renders valid non-installed LaunchAgents and a secret-free profile", async () => {
   const mod = await import("../../scripts/native-package.mjs");
@@ -45,6 +46,7 @@ test("native runtime does not kickstart a job it just bootstrapped", async () =>
     const home = path.join(root, "home");
     const bin = path.join(root, "bin");
     const log = path.join(root, "launchctl.log");
+    const readyMarker = path.join(root, "server.ready");
     fs.mkdirSync(path.join(home, "Library", "LaunchAgents"), { recursive: true });
     fs.mkdirSync(bin);
     const launchctl = path.join(bin, "launchctl");
@@ -52,6 +54,7 @@ test("native runtime does not kickstart a job it just bootstrapped", async () =>
       "#!/bin/sh",
       `printf '%s\\n' "$*" >> ${JSON.stringify(log)}`,
       "if [ \"$1\" = print ]; then exit 1; fi",
+      `case "$*" in *host.tunnel*) test -f ${JSON.stringify(readyMarker)} || exit 42 ;; esac`,
       "if [ \"$1\" = bootstrap ]; then exit 0; fi",
       "exit 0",
       "",
@@ -59,11 +62,15 @@ test("native runtime does not kickstart a job it just bootstrapped", async () =>
     for (const label of ["com.cardkazuma.chatgpt-local-bridge.host.server", "com.cardkazuma.chatgpt-local-bridge.host.tunnel"]) {
       fs.writeFileSync(path.join(home, "Library", "LaunchAgents", `${label}.plist`), "fixture\n");
     }
-    server = spawn(process.execPath, ["-e", "const h=require('http').createServer((q,r)=>{r.setHeader('content-type','application/json');r.end(JSON.stringify({ready:true,catalogVersion:'daily-use-v1'}))});h.listen(0,'127.0.0.1',()=>console.log(h.address().port))"], {
-      stdio: ["ignore", "pipe", "inherit"],
+    const allocator = createServer();
+    allocator.listen(0, "127.0.0.1");
+    await once(allocator, "listening");
+    const port = allocator.address().port;
+    allocator.close();
+    await once(allocator, "close");
+    server = spawn(process.execPath, ["-e", `setTimeout(()=>{const fs=require('fs');const h=require('http').createServer((q,r)=>{r.setHeader('content-type','application/json');r.end(JSON.stringify({ready:true,catalogVersion:'daily-use-v1'}))});h.listen(${port},'127.0.0.1',()=>fs.writeFileSync(${JSON.stringify(readyMarker)},'ready'))},250)`], {
+      stdio: ["ignore", "ignore", "inherit"],
     });
-    const [portOutput] = await once(server.stdout, "data");
-    const port = Number(String(portOutput).trim());
     assert.equal(Number.isInteger(port), true);
     const config = path.join(root, "runtime.json");
     fs.writeFileSync(config, JSON.stringify({ stateRoot: path.join(root, "state"), port }));
