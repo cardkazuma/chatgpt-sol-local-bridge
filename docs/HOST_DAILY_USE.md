@@ -9,19 +9,58 @@ cutover commands as routine startup.
 
 ## Operating contract
 
-Set `BRIDGE_PROFILE=host` only for the native candidate. The profile advertises
-catalog `daily-use-v1` and omits the legacy fixed-source
+Set `BRIDGE_PROFILE=host` only for the native candidate. The attach-capable
+profile advertises catalog `daily-use-v2` and omits the legacy fixed-source
 `git_publish_branch`. It runs as the normal logged-in Mac user and is not a
 Codex-style filesystem/network sandbox. Every file, Git, project, shell and
 process call carries a stable workspace ID. The index is a locator; resume
 refreshes actual Git state and points to repository instructions.
 
-Create one task-owned worktree with `workspace_create`, then retain its ID for
-`workspace_status`, file reads/edits, project checks, `repo_shell`, Git and
-managed-process calls. Use `workspace_checkpoint` before leaving a chat.
+Create one task-owned Git worktree with `workspace_create`, or register an
+explicitly selected existing Git or non-Git directory in place with
+`workspace_attach`. Directory attachment accepts an absolute or `~` path and
+creates no copy, move, branch or worktree. Branch attachment instead requires
+`repositoryPath`, the exact existing `branch`, and its full `expectedHead`;
+optionally provide an existing Git `remote` name to verify that remote head.
+An already checked-out branch is reused in place. An existing local branch with
+no worktree gets one task-owned worktree for that same branch—no new branch is
+created. A verified remote-only branch gets a detached task-owned worktree at
+the exact commit, leaving local branch refs unchanged. Any head mismatch fails
+before a branch or worktree is created.
+
+When branch attachment includes `remote`, it requires one identical fetch/push
+destination and records a hash of that routing as the publish binding. After
+selective staging and a hook-enforced commit,
+`git_publish_attached_branch` accepts only `workspaceId`.
+It requires the recorded repository, remote configuration, requested branch,
+and expected remote head; requires local HEAD to be a fast-forward descendant;
+rechecks the remote; performs one normal non-force push of that exact commit to
+that exact branch; and requires exact remote SHA readback. Successful readback
+advances the stored expected remote head, permitting a later legitimate
+commit/publish cycle. A moved remote, switched branch, changed remote routing,
+plain directory, ordinary Git attachment, or branch attachment without a
+remote publish binding is refused. The tool cannot create a branch or PR and
+accepts no URL, branch, refspec, force, or PR argument.
+
+The selected directory is the exact authority root. A directory nested inside
+a larger Git checkout remains usable, but is treated as non-Git so attachment
+does not implicitly authorize its parent; attach the Git top level when Git
+tools are required. Retain the returned ID for `workspace_status`,
+file reads/edits, searches, applicable project/Git checks, `repo_shell` and
+managed-process calls. Git-only tools still require a Git repository. Use
+`workspace_checkpoint` before leaving a chat.
 `workspace_resume` preserves dirty/unpublished files and refreshes HEAD/status.
 If index validation fails, stop mutation and use read-only `workspace_recover`;
 it never resets metadata or deletes worktrees.
+
+All file/search, project, shell and managed-process tools use the attachment's
+request-scoped workspace ID exactly as they do for a Bridge-created worktree.
+Structured Git tools additionally require a Git-backed attachment. Runtime
+health and policy discovery are intentionally workspace-independent. Recovery
+can enumerate task-owned worktrees under the managed root, but cannot discover
+an arbitrary external directory after the sole index is missing or corrupt;
+that bounded recovery limitation is why damaged metadata remains preserved and
+read-only rather than being replaced with an apparently empty registry.
 
 The short development loop is:
 
@@ -33,8 +72,10 @@ The short development loop is:
 4. Run focused and complete repository checks. Inspect unstaged state, stage
    exact paths, inspect the cached diff, and commit through the repository's
    actual configured hooks without bypass.
-5. Use normal `git`/`gh` through `repo_shell` for sync, non-force push, draft PR,
-   review and CI readback. Before an authorized merge, use:
+5. For an attached existing PR branch, use `git_publish_attached_branch` to
+   update that same branch without creating a replacement branch or PR. Use
+   normal `git`/`gh` through `repo_shell` for other sync, draft PR, review and
+   CI readback. Before an authorized merge, use:
 
        node scripts/guarded-gh-merge.mjs \
          --repo=OWNER/REPO --pr=NUMBER --expected-head=FULL_SHA
@@ -47,6 +88,27 @@ The short development loop is:
 Broad shell is inherently mutating and cannot be atomically classified. Inspect
 status/diff afterward and reread affected files before another derived edit.
 High-impact live actions still require exact current-task approval.
+
+## Attach-capability activation
+
+`workspace_attach` changes the advertised catalog from `daily-use-v1` to
+`daily-use-v2`, so merging source alone does not update the running Bridge or a
+cached ChatGPT tool catalog. Activation requires a separately authorized native
+release installation and controlled restart. Stage the reviewed commit and its
+lockfile dependencies in a new owner-only release, render and lint the two
+LaunchAgent plists, preserve the active release and S6 artifacts, then restart
+only the owned server followed by the tunnel readiness barrier. Require
+loopback 401 refusal, authenticated `/readyz` reporting `daily-use-v2` and 33
+tools, tunnel control-plane readiness, and a ChatGPT catalog refresh before use.
+
+For rollback, boot out only the candidate labels, bootstrap the preserved prior
+server and then its tunnel, refresh the prior catalog, and verify its historical
+readiness. Preserve candidate diagnostics, workspace metadata, coordinator
+data, credentials and Keychain access controls in either direction.
+
+Registry-only `workspace_detach`/`workspace_forget`, which would remove a
+locator without deleting user data, remains a non-blocking future hygiene
+enhancement and is not part of this catalog.
 
 ## Render-only native package
 

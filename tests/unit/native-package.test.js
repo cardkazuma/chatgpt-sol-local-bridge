@@ -68,7 +68,7 @@ test("native runtime does not kickstart a job it just bootstrapped", async () =>
     const port = allocator.address().port;
     allocator.close();
     await once(allocator, "close");
-    server = spawn(process.execPath, ["-e", `setTimeout(()=>{const fs=require('fs');const h=require('http').createServer((q,r)=>{r.setHeader('content-type','application/json');r.end(JSON.stringify({ready:true,catalogVersion:'daily-use-v1'}))});h.listen(${port},'127.0.0.1',()=>fs.writeFileSync(${JSON.stringify(readyMarker)},'ready'))},250)`], {
+    server = spawn(process.execPath, ["-e", `setTimeout(()=>{const fs=require('fs');const h=require('http').createServer((q,r)=>{r.setHeader('content-type','application/json');r.end(JSON.stringify({ready:true,catalogVersion:'daily-use-v2'}))});h.listen(${port},'127.0.0.1',()=>fs.writeFileSync(${JSON.stringify(readyMarker)},'ready'))},250)`], {
       stdio: ["ignore", "ignore", "inherit"],
     });
     assert.equal(Number.isInteger(port), true);
@@ -93,7 +93,7 @@ test("native startup waits for daily-use server readiness before tunnel bootstra
   const observations = [
     { ready: false, reason: "connection refused" },
     { ready: true, catalogVersion: "legacy-v1" },
-    { ready: true, catalogVersion: "daily-use-v1" },
+    { ready: true, catalogVersion: "daily-use-v2" },
   ];
   const delays = [];
   const result = await waitForNativeServerReady({
@@ -103,7 +103,7 @@ test("native startup waits for daily-use server readiness before tunnel bootstra
     timeoutMs: 5_000,
     intervalMs: 50,
   });
-  assert.deepEqual(result, { ready: true, catalogVersion: "daily-use-v1" });
+  assert.deepEqual(result, { ready: true, catalogVersion: "daily-use-v2" });
   assert.deepEqual(delays, [50, 50]);
 });
 
@@ -145,7 +145,7 @@ test("recovery stops after five attempts without replaying workspace commands", 
 test("native status distinguishes catalog, tunnel offline, and locked Keychain", async () => {
   const { nativeStatus } = await import("../../scripts/native-package.mjs");
   const result = await nativeStatus({
-    catalogProbe: async () => ({ ready: true, catalogVersion: "daily-use-v1" }),
+    catalogProbe: async () => ({ ready: true, catalogVersion: "daily-use-v2" }),
     tunnelProbe: async () => ({ ready: false, reason: "offline" }),
     keychainProbe: () => ({ available: false, reason: "interaction not allowed" }),
   });

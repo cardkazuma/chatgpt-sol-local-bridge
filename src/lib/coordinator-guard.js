@@ -116,6 +116,8 @@ function hostSnapshot(targetPath) {
 }
 
 function hostHead(root) {
+  const repository = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: root, encoding: "utf8" });
+  if (repository.status !== 0) return null;
   const result = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" });
   if (result.status !== 0 || !/^[a-f0-9]{40,64}$/.test(result.stdout.trim())) throw new Error("host Git HEAD observation is unavailable");
   return result.stdout.trim();

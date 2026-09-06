@@ -3,7 +3,7 @@ import { BRIDGE_PROFILE, ENABLED_TOOLS, HOST_WORKSPACE_INDEX_FILE, HOST_WORKTREE
 import { HostWorkspaceIndex, withHostWorkspace } from "./host-workspaces.js";
 
 export const hostWorkspaceIndex = new HostWorkspaceIndex({ stateFile: HOST_WORKSPACE_INDEX_FILE, worktreeRoot: HOST_WORKTREE_ROOT });
-const CONTEXT_FREE = new Set(["bridge_instructions", "workspace_list", "workspace_create", "workspace_resume", "workspace_status", "workspace_checkpoint", "workspace_recover", "health"]);
+const CONTEXT_FREE = new Set(["bridge_instructions", "workspace_list", "workspace_create", "workspace_attach", "workspace_resume", "workspace_status", "workspace_checkpoint", "workspace_recover", "health"]);
 
 // All registration sites go through this gate.  A disabled implementation is
 // not registered and therefore is absent from MCP tools/list, rather than
@@ -14,8 +14,10 @@ export function registerEnabledTool(server, name, definition, handler) {
     server.registerTool(name, definition, handler);
     return true;
   }
-  const inputSchema = { ...(definition.inputSchema || {}), workspaceId: z.string().regex(/^ws_[a-f0-9]{16}$/) };
-  server.registerTool(name, { ...definition, inputSchema }, async (args = {}, extra) => {
+  const { strictInput = false, ...publicDefinition } = definition;
+  const inputShape = { ...(definition.inputSchema || {}), workspaceId: z.string().regex(/^ws_[a-f0-9]{16}$/) };
+  const inputSchema = strictInput ? z.object(inputShape).strict() : inputShape;
+  server.registerTool(name, { ...publicDefinition, inputSchema }, async (args = {}, extra) => {
     const { workspaceId, ...rest } = args;
     return withHostWorkspace(hostWorkspaceIndex, workspaceId, { mutating: definition.annotations?.readOnlyHint !== true }, () => handler(rest, extra));
   });

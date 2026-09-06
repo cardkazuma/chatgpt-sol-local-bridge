@@ -67,15 +67,17 @@ export const HOST_TOOL_CATALOG = Object.freeze([
   { name: "bridge_instructions", family: "policy" },
   { name: "workspace_list", family: "workspace" },
   { name: "workspace_create", family: "workspace", mutating: true },
+  { name: "workspace_attach", family: "workspace", mutating: true },
   { name: "workspace_resume", family: "workspace" },
   { name: "workspace_status", family: "workspace" },
   { name: "workspace_checkpoint", family: "workspace", mutating: true },
   { name: "workspace_recover", family: "workspace" },
+  { name: "git_publish_attached_branch", family: "git-remote-write", mutating: true },
   ...TOOL_CATALOG.filter(({ name }) => !["bridge_instructions", "workspace_list", "workspace_open", "git_publish_branch"].includes(name)),
 ].map((entry) => entry.name === "repo_shell" ? { ...entry, mutating: true } : entry));
 
 const CATALOGS = Object.freeze({ legacy: TOOL_CATALOG, host: HOST_TOOL_CATALOG });
-const VERSIONS = Object.freeze({ legacy: "legacy-s6-v1", host: "daily-use-v1" });
+const VERSIONS = Object.freeze({ legacy: "legacy-s6-v1", host: "daily-use-v2" });
 
 export function toolCatalogForProfile(profile = "legacy") {
   const catalog = CATALOGS[profile];

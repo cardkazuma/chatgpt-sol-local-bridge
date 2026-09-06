@@ -57,7 +57,7 @@ export function createServer() {
       `You are connected through the normal-user daily-use host profile ${TOOL_CATALOG_VERSION}.`,
       "Call bridge_instructions before operating and carry a stable workspaceId on every workspace-affecting call.",
       "This is policy-governed normal Mac authority, not Codex sandbox parity. repo_shell is broad and mutating.",
-      "Use task-owned worktrees, repository instructions/hooks/checks, fresh Git/GitHub state, and explicit approval for high-impact actions.",
+      "Use task-owned worktrees, attached existing directories, or exact-head existing branch attachments; publish an existing attached PR branch only through its recorded target; follow repository instructions/hooks/checks, fresh Git/GitHub state, and explicit approval for high-impact actions.",
       `Enabled bridge tools: ${ENABLED_TOOL_NAMES.join(", ")}.`,
     ].join(" ") : [
       "You are connected to this workstation through chatgpt-sol-local-bridge.",

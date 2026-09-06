@@ -31,7 +31,8 @@ if (files.length === 0) {
   console.error(`no tests found under ${start}`);
   process.exit(1);
 }
-const result = spawnSync(process.execPath, ["--test", "--test-reporter=spec", ...files], {
+// Keep process-heavy Git/runtime integration fixtures from starving bounded timer assertions.
+const result = spawnSync(process.execPath, ["--test", "--test-concurrency=4", "--test-reporter=spec", ...files], {
   cwd: repoRoot,
   stdio: "inherit",
 });

@@ -96,7 +96,7 @@ export async function waitForNativeServerReady({
   while (now() - startedAt <= timeoutMs) {
     try {
       const value = await probe();
-      if (value?.ready === true && value.catalogVersion === "daily-use-v1") return value;
+      if (value?.ready === true && value.catalogVersion === "daily-use-v2") return value;
       lastReason = value?.reason || (value?.ready ? "catalog mismatch" : "server unavailable");
     } catch (error) {
       lastReason = String(error.message || error).slice(0, 300);
@@ -110,7 +110,7 @@ export async function nativeStatus({ catalogProbe, tunnelProbe, keychainProbe = 
   const serverValue = await catalogProbe();
   const tunnelValue = await tunnelProbe();
   const keychainValue = keychainProbe();
-  const server = serverValue?.ready && serverValue.catalogVersion === "daily-use-v1"
+  const server = serverValue?.ready && serverValue.catalogVersion === "daily-use-v2"
     ? { state: "READY", catalogVersion: serverValue.catalogVersion }
     : { state: serverValue?.ready ? "CATALOG_STALE" : "OFFLINE", reason: serverValue?.reason || "server unavailable" };
   const tunnel = tunnelValue?.ready ? { state: "READY" } : { state: "OFFLINE", reason: tunnelValue?.reason || "tunnel unavailable" };

@@ -150,7 +150,7 @@ export function assertInWorkspace(target, { write = false } = {}) {
   });
 
   if (!allowed.some((root) => isWithin(canonical, root))) {
-    throw new Error(`path is outside registered workspace roots: ${canonical}\nConfigure WORKSPACE_ROOTS explicitly; tool-driven root registration is not available in S1.`);
+    throw new Error(`path is outside registered workspace roots: ${canonical}\n${workspaceRegistrationGuidance()}`);
   }
   return canonical;
 }
@@ -166,11 +166,17 @@ function assertLexicallyInWorkspace(target, scope) {
   try { candidate = canonicalPath(requested, { forWrite: true }); }
   catch {
     if (lexicalAllowed) return;
-    throw new Error(`path is outside ${scope} workspace roots: ${requested}\nConfigure WORKSPACE_ROOTS explicitly; tool-driven root registration is not available in S1.`);
+    throw new Error(`path is outside ${scope} workspace roots: ${requested}\n${workspaceRegistrationGuidance()}`);
   }
   if (!allowed.some((root) => isWithin(candidate, root))) {
-    throw new Error(`path is outside ${scope} workspace roots: ${requested}\nConfigure WORKSPACE_ROOTS explicitly; tool-driven root registration is not available in S1.`);
+    throw new Error(`path is outside ${scope} workspace roots: ${requested}\n${workspaceRegistrationGuidance()}`);
   }
+}
+
+function workspaceRegistrationGuidance() {
+  return BRIDGE_PROFILE === "host"
+    ? "Call workspace_attach with the explicit existing location, then use its workspaceId."
+    : "Configure WORKSPACE_ROOTS explicitly; tool-driven root registration is not available in S1.";
 }
 
 function effectiveRoots() {

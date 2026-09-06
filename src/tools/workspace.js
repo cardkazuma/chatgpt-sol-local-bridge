@@ -2,8 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { z } from "zod";
-import { BRIDGE_PROFILE, loadState, saveState, workspaceRoots } from "../lib/config.js";
-import { assertStructuredPath, canonicalPath, currentWorkspace, resolveUserPath, walkTree } from "../lib/paths.js";
+import { BRIDGE_PROFILE, loadState, saveState, TOOL_CATALOG_VERSION, workspaceRoots } from "../lib/config.js";
+import { assertAllowed, assertStructuredPath, canonicalPath, currentWorkspace, expandHome, resolveUserPath, walkTree } from "../lib/paths.js";
 import { hostWorkspaceIndex, registerEnabledTool } from "../lib/tool-registry.js";
 import { fail, json, ok } from "../lib/text.js";
 
@@ -15,10 +15,10 @@ export function registerWorkspace(server) {
   }, async () => {
     if (BRIDGE_PROFILE !== "host") return json({ current: currentWorkspace() || null, roots: workspaceRoots().filter(isVisibleRoot) });
     try {
-      const workspaces = hostWorkspaceIndex.list().map(({ id, project, objective, branch, baseRef, baseHead, observedHead, pr, checkpoint, createdAt, updatedAt }) => ({
-        id, project, objective, branch, baseRef, baseHead, observedHead, pr, checkpoint, createdAt, updatedAt,
+      const workspaces = hostWorkspaceIndex.list().map(({ id, kind, project, objective, branch, baseRef, baseHead, observedHead, pr, checkpoint, createdAt, updatedAt }) => ({
+        id, kind: kind || "worktree", project, objective, branch, baseRef, baseHead, observedHead, pr, checkpoint, createdAt, updatedAt,
       }));
-      return json({ catalog: "daily-use-v1", workspaces });
+      return json({ catalog: TOOL_CATALOG_VERSION, workspaces });
     }
     catch (error) { return fail(`${error.message}; recovery candidates: ${JSON.stringify(hostWorkspaceIndex.recoverCandidates())}`); }
   });
@@ -52,6 +52,39 @@ export function registerWorkspace(server) {
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   }, async (args) => {
     try { return json(hostWorkspaceIndex.create(args)); } catch (error) { return fail(error.message); }
+  });
+
+  registerEnabledTool(server, "workspace_attach", {
+    title: "Attach existing host workspace",
+    description: "Register an existing directory in place, or open an exact existing Git branch at an expected head. Reuses an existing branch worktree; an unmounted local branch gets one same-branch worktree, while a remote-only branch gets a detached exact-head worktree. Never creates or replaces a branch. Supply an existing remote name to bind later structured publication to that exact remote branch.",
+    inputSchema: {
+      path: z.string().min(1).max(4_000).optional().describe("Directory mode: absolute or ~ path to an existing local directory"),
+      repositoryPath: z.string().min(1).max(4_000).optional().describe("Branch mode: absolute or ~ path to an existing local Git repository"),
+      branch: z.string().min(1).max(200).optional().describe("Branch mode: exact existing local or remote branch name"),
+      expectedHead: z.string().regex(/^[a-fA-F0-9]{40,64}$/).optional().describe("Branch mode: reviewed full commit ID that must match"),
+      remote: z.string().min(1).max(101).optional().describe("Branch mode: optional Git remote name for exact verification and later same-branch structured publication"),
+      objective: z.string().min(1).max(2_000), project: z.string().max(200).optional(),
+      scope: z.array(z.string().max(500)).max(100).optional(),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  }, async ({ path: input, repositoryPath: repositoryInput, branch, expectedHead, remote, ...metadata }) => {
+    try {
+      const directoryMode = Boolean(input);
+      const branchMode = Boolean(repositoryInput || branch || expectedHead || remote);
+      if (directoryMode === branchMode) throw new Error("workspace_attach requires exactly one mode: path, or repositoryPath + branch + expectedHead");
+      if (branchMode && (!repositoryInput || !branch || !expectedHead)) {
+        throw new Error("branch attachment requires repositoryPath, branch, and expectedHead");
+      }
+      const selectedInput = directoryMode ? input : repositoryInput;
+      const expanded = expandHome(selectedInput);
+      if (!path.isAbsolute(expanded)) throw new Error("workspace_attach paths must be absolute or start with ~");
+      const directoryPath = assertAllowed(expanded);
+      if (!fs.statSync(directoryPath).isDirectory()) throw new Error(`${directoryPath} is not a directory`);
+      if (directoryMode) return json(hostWorkspaceIndex.attach({ directoryPath, ...metadata }));
+      return json(hostWorkspaceIndex.attachBranch({
+        repositoryPath: directoryPath, branch, expectedHead, remote, ...metadata,
+      }));
+    } catch (error) { return fail(error.message); }
   });
 
   registerEnabledTool(server, "workspace_resume", {
@@ -102,7 +135,7 @@ export function registerWorkspace(server) {
   }, async ({ path: input, maxDepth, maxEntries } = {}) => {
     try {
       const root = input ? resolveUserPath(input) : currentWorkspace();
-      if (!root) return fail("no current workspace — call workspace_open first or pass path");
+      if (!root) return fail(BRIDGE_PROFILE === "host" ? "no explicit host workspace" : "no current workspace — call workspace_open first or pass path");
       return json(walkTree(root, { maxDepth: maxDepth ?? 3, maxEntries: maxEntries ?? 400 }));
     } catch (error) {
       return fail(error.message);
@@ -116,7 +149,7 @@ export function registerWorkspace(server) {
   }, async () => {
     try {
       const root = currentWorkspace();
-      if (!root) return fail("no current workspace — call workspace_open first");
+      if (!root) return fail(BRIDGE_PROFILE === "host" ? "no explicit host workspace" : "no current workspace — call workspace_open first");
       const top = fs.readdirSync(root)
         .filter((name) => name !== ".DS_Store")
         .map((name) => path.join(root, name))
