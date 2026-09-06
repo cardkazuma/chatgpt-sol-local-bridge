@@ -133,3 +133,10 @@ without an ACL change; Git, gh, Node, Python, SSH and Docker CLI are installed.
 No running ChatGPT desktop application was found in the local app inventory.
 This does not establish iPhone or Safari support, which remains W5/W6 device
 acceptance. No live tunnel handshake was attempted by W1–W4.
+
+The repository CI uses the explicit portable `test:ci` gate. It excludes only
+the real S7-B coordinator fixture because the accepted private wheel is not
+available to this repository's Actions token; the workflow prints that
+disposition instead of treating the prerequisite as passing. The unchanged
+fixture remains mandatory in the local full-suite gate with the documented
+accepted interpreter and artifact SHA.

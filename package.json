@@ -27,6 +27,7 @@
     "test": "node scripts/run-tests.mjs",
     "test:unit": "node scripts/run-tests.mjs unit",
     "test:integration": "node scripts/run-tests.mjs integration",
+    "test:ci": "node scripts/run-tests.mjs ci",
     "lint": "eslint .",
     "check": "npm run lint && npm test",
     "prepublishOnly": "npm run check"
