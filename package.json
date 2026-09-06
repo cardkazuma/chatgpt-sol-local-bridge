@@ -1,7 +1,7 @@
 {
   "name": "chatgpt-sol-local-bridge",
   "version": "1.0.0-s1",
-  "description": "Pinned S1 MCP bridge foundation for disposable repository workspaces inside a hardened container.",
+  "description": "Local MCP bridge with separate legacy-contained and trusted native-host development profiles.",
   "type": "module",
   "private": true,
   "license": "MIT",
