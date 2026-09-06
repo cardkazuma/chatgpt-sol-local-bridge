@@ -63,15 +63,40 @@ export const TOOL_CATALOG = Object.freeze([
   { name: "health", family: "runtime" },
 ]);
 
-const REVIEWED_NAMES = new Set(EXPECTED_TOOL_NAMES);
+export const HOST_TOOL_CATALOG = Object.freeze([
+  { name: "bridge_instructions", family: "policy" },
+  { name: "workspace_list", family: "workspace" },
+  { name: "workspace_create", family: "workspace", mutating: true },
+  { name: "workspace_resume", family: "workspace" },
+  { name: "workspace_status", family: "workspace" },
+  { name: "workspace_checkpoint", family: "workspace", mutating: true },
+  { name: "workspace_recover", family: "workspace" },
+  ...TOOL_CATALOG.filter(({ name }) => !["bridge_instructions", "workspace_list", "workspace_open", "git_publish_branch"].includes(name)),
+].map((entry) => entry.name === "repo_shell" ? { ...entry, mutating: true } : entry));
 
-export function parseEnabledTools(rawValue) {
-  if (rawValue == null) return new Set(EXPECTED_TOOL_NAMES);
+const CATALOGS = Object.freeze({ legacy: TOOL_CATALOG, host: HOST_TOOL_CATALOG });
+const VERSIONS = Object.freeze({ legacy: "legacy-s6-v1", host: "daily-use-v1" });
+
+export function toolCatalogForProfile(profile = "legacy") {
+  const catalog = CATALOGS[profile];
+  if (!catalog) throw new Error(`unsupported bridge profile: ${profile}`);
+  return catalog;
+}
+
+export function catalogVersionForProfile(profile = "legacy") {
+  toolCatalogForProfile(profile);
+  return VERSIONS[profile];
+}
+
+export function parseEnabledTools(rawValue, profile = "legacy") {
+  const expected = toolCatalogForProfile(profile).map(({ name }) => name);
+  const reviewedNames = new Set(expected);
+  if (rawValue == null) return new Set(expected);
   const raw = String(rawValue).trim();
   if (!raw) throw new Error("ENABLED_TOOLS must contain at least one reviewed bridge tool name");
   const names = raw.split(/[\n,]/).map((name) => name.trim()).filter(Boolean);
   if (new Set(names).size !== names.length) throw new Error("ENABLED_TOOLS contains duplicate tool names");
-  const unsupported = names.filter((name) => !REVIEWED_NAMES.has(name));
+  const unsupported = names.filter((name) => !reviewedNames.has(name));
   if (unsupported.length) {
     throw new Error(`ENABLED_TOOLS contains unsupported or disabled tool(s): ${unsupported.join(", ")}`);
   }

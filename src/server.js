@@ -8,6 +8,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import {
   APP_NAME,
   APP_VERSION,
+  BRIDGE_PROFILE,
   BODY_LIMIT,
   ENABLED_TOOL_NAMES,
   HARDENED_CONTAINER,
@@ -15,6 +16,7 @@ import {
   MCP_TOKEN,
   MCP_UNIX_SOCKET_PATH,
   PORT,
+  TOOL_CATALOG_VERSION,
   ensureStateDirs,
   isLoopbackHost,
   validateRuntimeConfig,
@@ -36,8 +38,9 @@ import { initializeS6Broker } from "./lib/s6-broker-client.js";
 for (const key of [
   "CONTROL_PLANE_API_KEY", "S6_GITHUB_TOKEN_FILE", "S6_BROKER_CAPABILITY",
   "GITHUB_TOKEN", "GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GITLAB_TOKEN", "BITBUCKET_TOKEN",
-  "GIT_ASKPASS", "GIT_SSH_COMMAND", "SSH_AUTH_SOCK",
+  "GIT_ASKPASS", "GIT_SSH_COMMAND",
 ]) delete process.env[key];
+if (BRIDGE_PROFILE !== "host") delete process.env.SSH_AUTH_SOCK;
 
 // S6 registers an in-memory capability with the per-session host broker before
 // the MCP server becomes available. The capability is never placed in the
@@ -50,7 +53,13 @@ export function createServer() {
     version: APP_VERSION,
     websiteUrl: "https://github.com/mingrath/chatgpt-sol-local-bridge",
   }, {
-    instructions: [
+    instructions: BRIDGE_PROFILE === "host" ? [
+      `You are connected through the normal-user daily-use host profile ${TOOL_CATALOG_VERSION}.`,
+      "Call bridge_instructions before operating and carry a stable workspaceId on every workspace-affecting call.",
+      "This is policy-governed normal Mac authority, not Codex sandbox parity. repo_shell is broad and mutating.",
+      "Use task-owned worktrees, repository instructions/hooks/checks, fresh Git/GitHub state, and explicit approval for high-impact actions.",
+      `Enabled bridge tools: ${ENABLED_TOOL_NAMES.join(", ")}.`,
+    ].join(" ") : [
       "You are connected to this workstation through chatgpt-sol-local-bridge.",
       "Call bridge_instructions before operating.",
       "Create/update/edit/test/build are allowed inside registered workspaces.",
@@ -86,7 +95,7 @@ export function createApp({ host = HOST } = {}) {
     res.json({ ok: true, name: APP_NAME, version: APP_VERSION, platform: platformSummary(), pid: process.pid });
   });
   app.get("/readyz", (_req, res) => {
-    res.json({ ready: true, toolCount: ENABLED_TOOL_NAMES.length, tools: ENABLED_TOOL_NAMES });
+    res.json({ ready: true, profile: BRIDGE_PROFILE, catalogVersion: TOOL_CATALOG_VERSION, toolCount: ENABLED_TOOL_NAMES.length, tools: ENABLED_TOOL_NAMES });
   });
 
   app.post("/mcp", async (req, res) => {

@@ -1,10 +1,14 @@
 import fs from "node:fs";
 import crypto from "node:crypto";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { isWithin, currentWorkspace } from "./paths.js";
 import { s6BrokerConfigured, s6BrokerCoordinateMutation, s6BrokerObserveResource } from "./s6-broker-client.js";
+import { BRIDGE_PROFILE } from "./config.js";
+import { activeHostWorkspace } from "./host-workspaces.js";
 
 const COVERED_ROUTES = new Set(["write_file", "edit_file", "apply_patch"]);
+const hostObservations = new Map();
 
 /**
  * Narrow S7-B structured-mutation seam. S1/S5 deliberately do not claim
@@ -13,6 +17,7 @@ const COVERED_ROUTES = new Set(["write_file", "edit_file", "apply_patch"]);
  */
 export async function coordinatorBeforeMutation({ operation, targetPath, observedContentSha256 = undefined } = {}) {
   if (!COVERED_ROUTES.has(operation)) throw new Error("coordinator route is not covered by this adapter");
+  if (BRIDGE_PROFILE === "host") return hostBeforeMutation({ operation, targetPath, observedContentSha256 });
   if (process.env.BRIDGE_GOVERNANCE_MODE !== "s6") {
     return { allowed: true, checked: false, reasonCode: "S7B_NOT_AN_S6_MUTATION", result: null };
   }
@@ -38,6 +43,13 @@ export async function coordinatorBeforeMutation({ operation, targetPath, observe
 
 /** Record the exact complete-file bytes returned by read_file as coordinator evidence. */
 export async function coordinatorObserveRead({ targetPath, contentSha256 } = {}) {
+  if (BRIDGE_PROFILE === "host") {
+    const workspace = activeHostWorkspace();
+    if (!workspace) throw new Error("host observation requires explicit workspace context");
+    const { canonicalTarget } = coordinatorTarget(targetPath);
+    hostObservations.set(hostObservationKey(workspace.id, canonicalTarget), { contentSha256, head: hostHead(workspace.worktreePath) });
+    return { allowed: true, checked: true, reasonCode: "HOST_OBSERVATION_RECORDED", result: null };
+  }
   if (process.env.BRIDGE_GOVERNANCE_MODE !== "s6") {
     return { allowed: true, checked: false, reasonCode: "S7B_NOT_AN_S6_OBSERVATION", result: null };
   }
@@ -55,6 +67,13 @@ export async function coordinatorObserveRead({ targetPath, contentSha256 } = {})
 
 /** Re-check the content version immediately before the supported writer runs. */
 export function assertCoordinatorWriteBoundary({ targetPath, result } = {}) {
+  if (BRIDGE_PROFILE === "host") {
+    const expected = result?.freshness?.current;
+    if (!expected) throw new Error("host freshness evidence is missing at the write boundary");
+    const actual = hostSnapshot(targetPath);
+    if (actual.head !== expected.head || actual.contentSha256 !== expected.contentSha256) throw new Error("host freshness changed at write boundary: REFRESH");
+    return true;
+  }
   if (process.env.BRIDGE_GOVERNANCE_MODE !== "s6") return true;
   const expected = result?.freshness?.current?.worktree_content_version;
   if (!expected || typeof expected !== "object") throw new Error("coordinator freshness evidence is missing at the write boundary");
@@ -67,6 +86,43 @@ export function assertCoordinatorWriteBoundary({ targetPath, result } = {}) {
   }
   if (!sameContentVersion(actual, expected)) throw new Error(`coordinator freshness changed at write boundary: REFRESH (expected=${JSON.stringify(expected)} actual=${JSON.stringify(actual)})`);
   return true;
+}
+
+function hostBeforeMutation({ targetPath, observedContentSha256 }) {
+  const workspace = activeHostWorkspace();
+  if (!workspace) throw new Error("host mutation requires explicit workspace context");
+  const { canonicalTarget } = coordinatorTarget(targetPath);
+  const current = hostSnapshot(canonicalTarget);
+  const saved = hostObservations.get(hostObservationKey(workspace.id, canonicalTarget));
+  if (!saved) {
+    if (current.contentSha256 !== null || observedContentSha256 !== null) throw new Error("STALE_OBSERVATION: reread the file before mutation (REFRESH)");
+  } else if (saved.contentSha256 !== current.contentSha256 || saved.head !== current.head) {
+    throw new Error("STALE_OBSERVATION: file content or Git HEAD moved; reread before mutation (REFRESH)");
+  }
+  if (observedContentSha256 !== undefined && observedContentSha256 !== current.contentSha256) throw new Error("STALE_OBSERVATION: request bytes changed before mutation (REFRESH)");
+  return { allowed: true, checked: true, reasonCode: "HOST_FRESH", result: { decision: "ALLOW", freshness: { current } } };
+}
+
+function hostSnapshot(targetPath) {
+  const workspace = activeHostWorkspace();
+  const resolved = path.resolve(targetPath);
+  let contentSha256 = null;
+  if (fs.existsSync(resolved)) {
+    const stat = fs.lstatSync(resolved);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("host freshness target is not a regular file");
+    contentSha256 = sha256(fs.readFileSync(resolved));
+  }
+  return { contentSha256, head: hostHead(workspace.worktreePath) };
+}
+
+function hostHead(root) {
+  const result = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" });
+  if (result.status !== 0 || !/^[a-f0-9]{40,64}$/.test(result.stdout.trim())) throw new Error("host Git HEAD observation is unavailable");
+  return result.stdout.trim();
+}
+
+function hostObservationKey(workspaceId, targetPath) {
+  return `${workspaceId}:${path.resolve(targetPath)}`;
 }
 
 function coordinatorTarget(targetPath) {

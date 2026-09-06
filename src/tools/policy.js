@@ -1,4 +1,4 @@
-import { DESTRUCTIVE_APPROVAL_MODE, ENABLED_TOOL_NAMES } from "../lib/config.js";
+import { BRIDGE_PROFILE, DESTRUCTIVE_APPROVAL_MODE, ENABLED_TOOL_NAMES, TOOL_CATALOG_VERSION } from "../lib/config.js";
 import { registerEnabledTool } from "../lib/tool-registry.js";
 import { ok } from "../lib/text.js";
 
@@ -7,7 +7,16 @@ export function registerPolicy(server) {
     title: "Bridge instructions",
     description: "Return the reviewed bridge operating boundary and enabled tool catalog.",
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
-  }, async () => ok([
+  }, async () => ok(BRIDGE_PROFILE === "host" ? [
+    `This is the daily-use host profile (${TOOL_CATALOG_VERSION}). It runs with the normal logged-in Mac user authority; it is not a filesystem or network sandbox.`,
+    `Enabled MCP tools: ${ENABLED_TOOL_NAMES.join(", ")}`,
+    "Every workspace-affecting call requires a stable workspace ID. Resume refreshes real Git state and repository instruction locations; stored state is only a locator.",
+    "Worktrees are isolated and mutations are serialized per worktree. This profile is non-exclusive: it does not claim universal coordinator interception, and coordinator-required operations still honor BLOCK, REFRESH, and UNAVAILABLE.",
+    "Normal developer PATH, HOME, Git/gh/SSH and package authentication may be used internally. Bridge and tunnel credentials are stripped from tool children and raw credentials must never be requested or returned.",
+    "repo_shell is broad and mutating. Inspect status/diff before and after it; reread files before derived edits. It can reach anything the logged-in user can reach.",
+    "Before live deployment/restart, production mutation, credential/security change, or destructive work, show the exact action and obtain explicit current-task approval. A stored checkpoint is not ambiguous approval.",
+    "Use repository AGENTS/HANDOFF/design sources, actual hooks without bypass, focused and complete checks, non-force push, fresh PR/review/CI state, and expected-head protection for an authorized merge.",
+  ].join("\n") : [
     "This is the reviewed isolated local bridge.",
     `Enabled MCP tools: ${ENABLED_TOOL_NAMES.join(", ")}`,
     "Structured file tools can read and write only visible paths inside the mounted disposable workspace.",

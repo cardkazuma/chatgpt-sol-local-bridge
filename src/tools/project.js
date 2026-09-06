@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { commandExists, runCommand } from "../lib/exec.js";
+import { BRIDGE_PROFILE } from "../lib/config.js";
 import { assertInWorkspace, currentWorkspace, resolveUserPath } from "../lib/paths.js";
 import { registerEnabledTool } from "../lib/tool-registry.js";
 import { fail, json } from "../lib/text.js";
@@ -12,10 +13,12 @@ export function registerProject(server) {
   for (const name of NAMES) {
     registerEnabledTool(server, `project_${name}`, {
       title: `Project ${name}`,
-      description: `Detect and run the project's ${name} command inside the hardened bridge container. Pass command to override detection; no destructive confirmation tool is exposed in S1.`,
+      description: BRIDGE_PROFILE === "host"
+        ? `Detect and run the project's ${name} command with the normal host developer environment inside the explicit workspace.`
+        : `Detect and run the project's ${name} command inside the hardened bridge container. Pass command to override detection; no destructive confirmation tool is exposed in S1.`,
       inputSchema: {
         cwd: z.string().optional(),
-        command: z.string().optional().describe("Explicit command override; it runs only inside the contained S1 runtime"),
+        command: z.string().optional().describe(BRIDGE_PROFILE === "host" ? "Explicit workspace-scoped host command override" : "Explicit command override; it runs only inside the contained S1 runtime"),
       },
       annotations: {
         readOnlyHint: false,

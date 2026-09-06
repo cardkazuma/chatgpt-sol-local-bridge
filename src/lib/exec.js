@@ -10,6 +10,7 @@ import {
   MAX_STDOUT_CHARS,
   PROCESS_RETENTION_DAYS,
   PROC_DIR,
+  BRIDGE_PROFILE,
   HARDENED_CONTAINER,
   TOOL_ENV_ALLOWLIST,
   TOOL_ENV_INHERIT_SECRETS,
@@ -17,6 +18,7 @@ import {
   ensureStateDirs,
 } from "./config.js";
 import { currentWorkspace } from "./paths.js";
+import { activeHostWorkspace } from "./host-workspaces.js";
 import { clip, nowIso } from "./text.js";
 
 export function runCommand(command, options = {}) {
@@ -116,6 +118,7 @@ export function startProcess(command, options = {}) {
     pid: child.pid,
     command: displayCommand(command),
     cwd,
+    workspaceId: activeHostWorkspace()?.id || null,
     startedAt: nowIso(),
     platform: process.platform,
     identity: getProcessIdentity(child.pid),
@@ -126,7 +129,7 @@ export function startProcess(command, options = {}) {
   return meta;
 }
 
-export function listProcesses() {
+export function listProcesses({ workspaceId } = {}) {
   ensureStateDirs();
   const records = fs.readdirSync(PROC_DIR)
     .filter((name) => name.endsWith(".json"))
@@ -160,7 +163,7 @@ export function listProcesses() {
       kept.push(publicRecord);
     }
   }
-  return kept;
+  return workspaceId ? kept.filter((record) => record.workspaceId === workspaceId) : kept;
 }
 
 export function isPidRunning(pid) {
@@ -273,8 +276,9 @@ export function toolEnvironment(overrides = {}) {
   for (const key of [
     "S6_BROKER_SOCKET", "S6_BROKER_CAPABILITY", "S6_GITHUB_TOKEN_FILE",
     "GITHUB_TOKEN", "GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GITLAB_TOKEN", "BITBUCKET_TOKEN",
-    "GIT_ASKPASS", "GIT_SSH_COMMAND", "SSH_AUTH_SOCK",
+    "GIT_ASKPASS", "GIT_SSH_COMMAND",
   ]) delete env[key];
+  if (BRIDGE_PROFILE !== "host") delete env.SSH_AUTH_SOCK;
   if (TOOL_ENV_INHERIT_SECRETS && !HARDENED_CONTAINER) return env;
   for (const key of Object.keys(env)) {
     if (/^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)$/.test(key)) {
