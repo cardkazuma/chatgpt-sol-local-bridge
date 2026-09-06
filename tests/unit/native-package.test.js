@@ -22,6 +22,8 @@ test("native package renders valid non-installed LaunchAgents and a secret-free 
       const content = fs.readFileSync(plist, "utf8");
       assert.match(content, /^<\?xml version="1\.0"/);
       assert.match(content, /<plist version="1\.0"><dict>/);
+      assert.match(content, /<key>EnvironmentVariables<\/key><dict>/);
+      assert.match(content, /<key>PATH<\/key><string>\/usr\/local\/bin:\/opt\/homebrew\/bin:\/usr\/bin:\/bin:\/usr\/sbin:\/sbin<\/string>/);
       if (process.platform === "darwin") {
         const lint = spawnSync("plutil", ["-lint", plist], { encoding: "utf8" });
         assert.equal(lint.status, 0, lint.stderr || lint.stdout);
@@ -32,6 +34,39 @@ test("native package renders valid non-installed LaunchAgents and a secret-free 
     assert.match(profile, /env:CONTROL_PLANE_API_KEY/);
     assert.match(profile, /env:BRIDGE_LOCAL_AUTH/);
     assert.doesNotMatch(profile, /tunnel_fixture|Bearer [A-Za-z0-9]/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("native runtime does not kickstart a job it just bootstrapped", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-runtime-start-"));
+  try {
+    const home = path.join(root, "home");
+    const bin = path.join(root, "bin");
+    const log = path.join(root, "launchctl.log");
+    fs.mkdirSync(path.join(home, "Library", "LaunchAgents"), { recursive: true });
+    fs.mkdirSync(bin);
+    const launchctl = path.join(bin, "launchctl");
+    fs.writeFileSync(launchctl, [
+      "#!/bin/sh",
+      `printf '%s\\n' "$*" >> ${JSON.stringify(log)}`,
+      "if [ \"$1\" = print ]; then exit 1; fi",
+      "if [ \"$1\" = bootstrap ]; then exit 0; fi",
+      "exit 0",
+      "",
+    ].join("\n"), { mode: 0o700 });
+    for (const label of ["com.cardkazuma.chatgpt-local-bridge.host.server", "com.cardkazuma.chatgpt-local-bridge.host.tunnel"]) {
+      fs.writeFileSync(path.join(home, "Library", "LaunchAgents", `${label}.plist`), "fixture\n");
+    }
+    const config = path.join(root, "runtime.json");
+    fs.writeFileSync(config, JSON.stringify({ stateRoot: path.join(root, "state") }));
+    const runtime = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../../scripts/native-runtime.mjs");
+    const result = spawnSync(process.execPath, [runtime, "start", `--config=${config}`], {
+      encoding: "utf8", env: { ...process.env, HOME: home, PATH: `${bin}:/usr/bin:/bin` },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const commands = fs.readFileSync(log, "utf8").trim().split("\n");
+    assert.equal(commands.filter((line) => line.startsWith("bootstrap ")).length, 2);
+    assert.equal(commands.filter((line) => line.startsWith("kickstart ")).length, 0);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 

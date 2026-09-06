@@ -11,6 +11,7 @@ export const NATIVE_TUNNEL_SHA256 = "c5d1ab3ccf3aa402f631e2fac66c763fa0b1b82e613
 export const NATIVE_TUNNEL_ZIP_SHA256 = "c683e15d84fb997f5af1cc7c4cb55008e19a555a9ed2ec0f89a5ff426d85f85c";
 export const SERVER_LABEL = "com.cardkazuma.chatgpt-local-bridge.host.server";
 export const TUNNEL_LABEL = "com.cardkazuma.chatgpt-local-bridge.host.tunnel";
+export const NATIVE_DEVELOPER_PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
 export function verifyNativeArtifact({ binary, platform = process.platform, arch = process.arch } = {}) {
   if (platform !== "darwin" || !["x64", "x86_64"].includes(arch)) throw new Error("pinned native tunnel artifact requires Darwin x86_64");
@@ -98,7 +99,7 @@ export async function nativeStatus({ catalogProbe, tunnelProbe, keychainProbe = 
 
 function plist(label, program, args, workingDirectory, outputRoot) {
   const values = [program, ...args].map((value) => `<string>${xml(value)}</string>`).join("\n");
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${xml(label)}</string>\n<key>ProgramArguments</key><array>${values}</array>\n<key>WorkingDirectory</key><string>${xml(workingDirectory)}</string>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n<key>ThrottleInterval</key><integer>120</integer>\n<key>ProcessType</key><string>Interactive</string>\n<key>Umask</key><integer>63</integer>\n<key>StandardOutPath</key><string>${xml(path.join(outputRoot, `${label}.out.log`))}</string>\n<key>StandardErrorPath</key><string>${xml(path.join(outputRoot, `${label}.err.log`))}</string>\n</dict></plist>\n`;
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${xml(label)}</string>\n<key>ProgramArguments</key><array>${values}</array>\n<key>WorkingDirectory</key><string>${xml(workingDirectory)}</string>\n<key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(NATIVE_DEVELOPER_PATH)}</string></dict>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n<key>ThrottleInterval</key><integer>120</integer>\n<key>ProcessType</key><string>Interactive</string>\n<key>Umask</key><integer>63</integer>\n<key>StandardOutPath</key><string>${xml(path.join(outputRoot, `${label}.out.log`))}</string>\n<key>StandardErrorPath</key><string>${xml(path.join(outputRoot, `${label}.err.log`))}</string>\n</dict></plist>\n`;
 }
 
 function writePrivate(target, content) {
