@@ -38,25 +38,31 @@ export class HostWorkspaceIndex {
     const source = realDirectory(repositoryPath, "repositoryPath");
     git(["rev-parse", "--git-dir"], source);
     if (!validBranch(branch)) throw new Error("workspace branch is invalid");
-    if (!Array.isArray(scope) || scope.some((item) => typeof item !== "string" || item.length > 500)) throw new Error("workspace scope is invalid");
+    git(["check-ref-format", "--branch", branch], source);
+    if (!Array.isArray(scope) || scope.length > 100 || scope.some((item) => typeof item !== "string" || item.length > 500)) throw new Error("workspace scope is invalid");
+    const normalizedObjective = bounded(objective, 2_000, true);
+    const normalizedProject = bounded(project, 200);
+    const normalizedScope = scope.map((item) => bounded(item, 500));
+    const normalizedBase = bounded(base, 200, true);
+    const baseHead = git(["rev-parse", "--verify", `${normalizedBase}^{commit}`], source);
+    const index = this.#read();
     const id = `ws_${crypto.randomBytes(8).toString("hex")}`;
     const target = path.join(this.worktreeRoot, id);
     fs.mkdirSync(this.worktreeRoot, { recursive: true, mode: 0o700 });
     fs.chmodSync(this.worktreeRoot, 0o700);
-    const baseHead = git(["rev-parse", "--verify", `${base}^{commit}`], source);
     git(["worktree", "add", target, "-b", branch, baseHead], source);
     const now = new Date().toISOString();
     const record = {
       id,
       version: 1,
-      project: bounded(project, 200),
-      objective: bounded(objective, 2_000, true),
-      scope: scope.map((item) => bounded(item, 500)),
+      project: normalizedProject,
+      objective: normalizedObjective,
+      scope: normalizedScope,
       repositoryPath: source,
       repositoryIdentity: sha256(realGitCommonDir(source)),
       worktreePath: fs.realpathSync.native(target),
       branch,
-      baseRef: bounded(base, 200),
+      baseRef: normalizedBase,
       baseHead,
       observedHead: baseHead,
       pr: null,
@@ -65,7 +71,6 @@ export class HostWorkspaceIndex {
       createdAt: now,
       updatedAt: now,
     };
-    const index = this.#read();
     index.workspaces[id] = record;
     this.#write(index);
     return record;
@@ -116,7 +121,12 @@ export class HostWorkspaceIndex {
   }
 
   #read() {
-    if (!fs.existsSync(this.stateFile)) return { version: 1, workspaces: {} };
+    if (!fs.existsSync(this.stateFile)) {
+      if (this.recoverCandidates().length > 0) {
+        throw new WorkspaceIndexCorruptError(`workspace index is missing while recoverable work exists; use workspace_recover for read-only candidates`);
+      }
+      return { version: 1, workspaces: {} };
+    }
     let value;
     try { value = JSON.parse(fs.readFileSync(this.stateFile, "utf8")); }
     catch { throw new WorkspaceIndexCorruptError(`workspace index is corrupt; preserved at ${this.stateFile}; use workspace_recover for read-only candidates`); }

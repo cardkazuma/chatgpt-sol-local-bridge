@@ -67,6 +67,68 @@ test("corrupt workspace metadata preserves bytes and offers read-only recovery",
   }
 });
 
+test("missing workspace metadata with recoverable work requires recovery and refuses create without Git side effects", async () => {
+  const { HostWorkspaceIndex, WorkspaceIndexCorruptError } = await import("../../src/lib/host-workspaces.js");
+  const fx = fixture();
+  try {
+    fs.mkdirSync(fx.worktreeRoot, { recursive: true });
+    const candidate = path.join(fx.worktreeRoot, "candidate");
+    git(["worktree", "add", "-q", "-b", "daily/recover-missing", candidate, "main"], fx.repo);
+    fs.writeFileSync(path.join(candidate, "dirty.txt"), "preserve me\n");
+    const beforeWorktrees = git(["worktree", "list", "--porcelain"], fx.repo);
+    const beforeBranches = git(["branch", "--format=%(refname)"], fx.repo);
+    const index = new HostWorkspaceIndex({ stateFile: fx.stateFile, worktreeRoot: fx.worktreeRoot });
+
+    assert.throws(() => index.list(), WorkspaceIndexCorruptError);
+    assert.throws(() => index.create({ repositoryPath: fx.repo, branch: "daily/refused-missing", objective: "must refuse" }), WorkspaceIndexCorruptError);
+    assert.equal(fs.existsSync(fx.stateFile), false);
+    assert.equal(git(["worktree", "list", "--porcelain"], fx.repo), beforeWorktrees);
+    assert.equal(git(["branch", "--format=%(refname)"], fx.repo), beforeBranches);
+    assert.equal(fs.readFileSync(path.join(candidate, "dirty.txt"), "utf8"), "preserve me\n");
+    assert.equal(index.recoverCandidates().length, 1);
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test("corrupt workspace metadata refuses create before adding a branch or worktree", async () => {
+  const { HostWorkspaceIndex, WorkspaceIndexCorruptError } = await import("../../src/lib/host-workspaces.js");
+  const fx = fixture();
+  try {
+    fs.mkdirSync(path.dirname(fx.stateFile), { recursive: true });
+    fs.writeFileSync(fx.stateFile, "{damaged", { mode: 0o600 });
+    const beforeWorktrees = git(["worktree", "list", "--porcelain"], fx.repo);
+    const beforeBranches = git(["branch", "--format=%(refname)"], fx.repo);
+    const index = new HostWorkspaceIndex({ stateFile: fx.stateFile, worktreeRoot: fx.worktreeRoot });
+
+    assert.throws(() => index.create({ repositoryPath: fx.repo, branch: "daily/refused-corrupt", objective: "must refuse" }), WorkspaceIndexCorruptError);
+    assert.equal(fs.readFileSync(fx.stateFile, "utf8"), "{damaged");
+    assert.equal(git(["worktree", "list", "--porcelain"], fx.repo), beforeWorktrees);
+    assert.equal(git(["branch", "--format=%(refname)"], fx.repo), beforeBranches);
+    assert.equal(fs.existsSync(fx.worktreeRoot), false);
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test("invalid workspace create input is rejected before adding a branch or worktree", async () => {
+  const { HostWorkspaceIndex } = await import("../../src/lib/host-workspaces.js");
+  const fx = fixture();
+  try {
+    const beforeWorktrees = git(["worktree", "list", "--porcelain"], fx.repo);
+    const beforeBranches = git(["branch", "--format=%(refname)"], fx.repo);
+    const index = new HostWorkspaceIndex({ stateFile: fx.stateFile, worktreeRoot: fx.worktreeRoot });
+
+    assert.throws(() => index.create({ repositoryPath: fx.repo, branch: "daily/refused-input", objective: "" }), /workspace text field is invalid/);
+    assert.equal(fs.existsSync(fx.stateFile), false);
+    assert.equal(fs.existsSync(fx.worktreeRoot), false);
+    assert.equal(git(["worktree", "list", "--porcelain"], fx.repo), beforeWorktrees);
+    assert.equal(git(["branch", "--format=%(refname)"], fx.repo), beforeBranches);
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
 test("workspace context cannot be redirected by an interleaved chat and serializes same-worktree mutations", async () => {
   const mod = await import("../../src/lib/host-workspaces.js");
   assert.equal(typeof mod.withHostWorkspace, "function");
