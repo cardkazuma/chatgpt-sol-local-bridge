@@ -23,7 +23,7 @@
     "s5:runtime-proof": "node scripts/s5-runtime-proof.mjs",
     "s5:local-workflow-proof": "node scripts/s5-local-workflow-proof.mjs",
     "s6:offline-proof": "node --test tests/unit/git-commit-ordering.test.js tests/unit/s6-attachment-recovery.test.js tests/unit/s6-broker.test.js tests/unit/s6-credential.test.js tests/unit/s6-proxy.test.js tests/unit/s6-runtime.test.js tests/unit/tool-contract.test.js",
-    "host:proof": "node --test tests/unit/host-profile.test.js tests/unit/host-workspaces.test.js tests/unit/host-stale-write.test.js tests/unit/host-git.test.js tests/unit/guarded-gh-merge.test.js tests/unit/native-package.test.js tests/integration/host-profile.test.js",
+    "host:proof": "node --test tests/unit/host-profile.test.js tests/unit/host-workspaces.test.js tests/unit/host-stale-write.test.js tests/unit/host-git.test.js tests/unit/guarded-gh-merge.test.js tests/unit/native-package.test.js tests/unit/native-supervisor.test.js tests/integration/host-profile.test.js",
     "test": "node scripts/run-tests.mjs",
     "test:unit": "node scripts/run-tests.mjs unit",
     "test:integration": "node scripts/run-tests.mjs integration",
