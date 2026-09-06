@@ -5,10 +5,11 @@ import { runCommand } from "../lib/exec.js";
 import { assertInWorkspace, assertStructuredPath, canonicalPath, currentWorkspace, isWithin, resolveUserPath } from "../lib/paths.js";
 import { assertReviewedHooks, reviewedHooksPath } from "../lib/git-governance.js";
 import { s6BrokerAttestCommit, s6BrokerConfigured, s6BrokerPreflightCommit, s6BrokerPublishBranch } from "../lib/s6-broker-client.js";
-import { registerEnabledTool } from "../lib/tool-registry.js";
+import { hostWorkspaceIndex, registerEnabledTool } from "../lib/tool-registry.js";
 import { fail, json } from "../lib/text.js";
 import { assertGovernedGitPath } from "../../scripts/pre-commit-policy.mjs";
 import { BRIDGE_PROFILE } from "../lib/config.js";
+import { activeHostWorkspace } from "../lib/host-workspaces.js";
 
 export function registerGit(server) {
   registerEnabledTool(server, "git_status", {
@@ -131,6 +132,52 @@ export function registerGit(server) {
       return fail(error.message);
     }
   });
+
+  if (BRIDGE_PROFILE === "host") registerEnabledTool(server, "git_publish_attached_branch", {
+    title: "Publish attached existing branch",
+    description: "Publish the explicit attached workspace's reviewed local HEAD to its recorded existing remote branch using the recorded expected remote head. Accepts no caller-selected remote, branch, URL, refspec, force mode, or PR target.",
+    inputSchema: {},
+    strictInput: true,
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  }, async (_args, extra) => {
+    try {
+      const workspace = activeHostWorkspace();
+      if (!workspace) return fail("git_publish_attached_branch requires an explicit workspace ID");
+      return json(await publishAttachedBranch({ workspaceId: workspace.id, signal: extra?.signal }));
+    } catch (error) {
+      return fail(error.message);
+    }
+  });
+}
+
+export async function publishAttachedBranch({ workspaceId, signal } = {}) {
+  const binding = hostWorkspaceIndex.publishBinding(workspaceId);
+  const localHead = await git(["rev-parse", "HEAD"], binding.worktreePath, signal);
+  if (!localHead.ok || !/^[a-f0-9]{40,64}$/.test(localHead.stdout.trim())) throw new Error("attached workspace local HEAD is unavailable");
+  const publishedHead = localHead.stdout.trim();
+  if (publishedHead === binding.expectedHead) throw new Error("attached workspace has no new commit to publish");
+  const ancestor = await git(["merge-base", "--is-ancestor", binding.expectedHead, publishedHead], binding.worktreePath, signal);
+  if (!ancestor.ok) throw new Error("attached workspace HEAD is not a fast-forward of its expected remote head");
+
+  const before = await remoteBranchHead(binding, signal);
+  if (before !== binding.expectedHead) throw new Error(`attached workspace remote head moved; expected ${binding.expectedHead}, observed ${before}`);
+  const pushed = await git([
+    "push", "--porcelain", "--no-force", binding.remote,
+    `${publishedHead}:refs/heads/${binding.branch}`,
+  ], binding.worktreePath, signal);
+  if (!pushed.ok) throw new Error("attached branch publish was refused by the recorded remote");
+  const readback = await remoteBranchHead(binding, signal);
+  if (readback !== publishedHead) throw new Error("attached branch publish readback did not match the reviewed local HEAD");
+  hostWorkspaceIndex.recordPublishedHead(workspaceId, { expectedHead: binding.expectedHead, publishedHead });
+  return { workspaceId, remote: binding.remote, branch: binding.branch, previousRemoteHead: before, publishedHead, remoteHead: readback };
+}
+
+async function remoteBranchHead(binding, signal) {
+  const result = await git(["ls-remote", "--heads", "--exit-code", binding.remote, `refs/heads/${binding.branch}`], binding.worktreePath, signal);
+  if (!result.ok) throw new Error("attached workspace remote branch is unavailable");
+  const head = result.stdout.trim().split(/\s+/, 1)[0]?.toLowerCase();
+  if (!/^[a-f0-9]{40,64}$/.test(head || "")) throw new Error("attached workspace remote branch returned an invalid head");
+  return head;
 }
 
 export async function commitReviewedIndex({

@@ -129,11 +129,17 @@ export class HostWorkspaceIndex {
     const index = this.#read();
     const repositoryPathResolved = fs.realpathSync.native(git(["rev-parse", "--show-toplevel"], source));
     const repositoryIdentity = sha256(realGitCommonDir(source));
+    const remoteIdentity = remote ? gitRemoteIdentity(source, remote) : "";
 
     if (remote) verifyRemoteHead(source, remote, branch, normalizedExpectedHead);
     const prior = Object.values(index.workspaces).find((record) => record.repositoryIdentity === repositoryIdentity
       && record.requestedBranch === branch && record.expectedHead === normalizedExpectedHead && (record.remote || "") === remote);
     if (prior) {
+      if (prior.remoteIdentity && prior.remoteIdentity !== remoteIdentity) throw new Error("workspace remote identity changed since attachment");
+      if (prior.remote && !prior.remoteIdentity) {
+        prior.remoteIdentity = remoteIdentity;
+        this.#write(index);
+      }
       const gitState = inspectRecord(prior);
       if (gitState.head !== normalizedExpectedHead) throw new Error("workspace expected-head mismatch for the previously attached branch");
       return { ...prior, git: publicGitState(gitState), instructionFiles: instructionFiles(prior.worktreePath) };
@@ -191,7 +197,9 @@ export class HostWorkspaceIndex {
       branch: gitState.branch || "",
       requestedBranch: branch,
       remote,
+      remoteIdentity,
       expectedHead: normalizedExpectedHead,
+      remoteHead: remote ? normalizedExpectedHead : null,
       baseRef: remote ? `refs/remotes/${remote}/${branch}` : `refs/heads/${branch}`,
       baseHead: normalizedExpectedHead,
       observedHead: normalizedExpectedHead,
@@ -204,6 +212,55 @@ export class HostWorkspaceIndex {
     index.workspaces[id] = record;
     this.#write(index);
     return { ...record, git: publicGitState(gitState), instructionFiles: instructionFiles(target) };
+  }
+
+  publishBinding(id) {
+    const record = this.get(id);
+    if (!["existing-branch", "remote-branch"].includes(record.kind) || !record.remote || !record.remoteIdentity) {
+      throw new Error("workspace has no reviewed existing-branch publish binding");
+    }
+    if (sha256(realGitCommonDir(record.worktreePath)) !== record.repositoryIdentity) {
+      throw new Error("workspace repository identity changed since attachment");
+    }
+    let currentRemoteIdentity;
+    try { currentRemoteIdentity = gitRemoteIdentity(record.worktreePath, record.remote); }
+    catch { throw new Error("workspace remote identity changed since attachment"); }
+    if (currentRemoteIdentity !== record.remoteIdentity) {
+      throw new Error("workspace remote identity changed since attachment");
+    }
+    const gitState = inspectGit(record.worktreePath);
+    if (record.kind === "existing-branch" && gitState.branch !== record.requestedBranch) {
+      throw new Error("workspace branch changed since attachment");
+    }
+    if (record.kind === "remote-branch" && gitState.branch) {
+      throw new Error("detached workspace acquired a branch and no longer matches its publish binding");
+    }
+    return {
+      id: record.id,
+      kind: record.kind,
+      worktreePath: record.worktreePath,
+      remote: record.remote,
+      branch: record.requestedBranch,
+      expectedHead: record.expectedHead,
+      localHead: gitState.head,
+    };
+  }
+
+  recordPublishedHead(id, { expectedHead, publishedHead } = {}) {
+    if (!/^[a-f0-9]{40,64}$/.test(expectedHead || "") || !/^[a-f0-9]{40,64}$/.test(publishedHead || "")) {
+      throw new Error("published workspace head is invalid");
+    }
+    const index = this.#read();
+    const record = index.workspaces[id];
+    if (!record || record.expectedHead !== expectedHead) throw new Error("workspace publish baseline changed before readback was recorded");
+    const binding = this.publishBinding(id);
+    if (binding.localHead !== publishedHead) throw new Error("workspace local HEAD moved before publish readback was recorded");
+    record.expectedHead = publishedHead;
+    record.remoteHead = publishedHead;
+    record.observedHead = publishedHead;
+    record.updatedAt = new Date().toISOString();
+    this.#write(index);
+    return record;
   }
 
   resume(id) {
@@ -359,6 +416,16 @@ function verifyRemoteHead(root, remote, branch, expectedHead) {
   if (remoteHead !== expectedHead) throw new Error("workspace expected-head mismatch for the existing remote branch");
 }
 
+function gitRemoteIdentity(root, remote) {
+  const fetchUrls = fixedGit(["remote", "get-url", "--all", remote], root, "workspace remote configuration is unavailable");
+  const pushUrls = fixedGit(["remote", "get-url", "--push", "--all", remote], root, "workspace remote configuration is unavailable");
+  if (!fetchUrls || !pushUrls) throw new Error("workspace remote configuration is unavailable");
+  if (fetchUrls.split("\n").length !== 1 || pushUrls.split("\n").length !== 1 || fetchUrls !== pushUrls) {
+    throw new Error("workspace remote fetch and push routing must be one identical destination");
+  }
+  return sha256(`fetch\0${fetchUrls}\0push\0${pushUrls}`);
+}
+
 function worktreeRecords(root) {
   const fields = git(["worktree", "list", "--porcelain", "-z"], root).split("\0");
   const records = [];
@@ -424,6 +491,8 @@ function validWorkspaceKind(record) {
     && validBranch(record.requestedBranch)
     && /^[a-f0-9]{40,64}$/.test(record.expectedHead || "")
     && typeof record.remote === "string"
+    && (record.remoteIdentity === undefined || record.remoteIdentity === "" || /^[a-f0-9]{64}$/.test(record.remoteIdentity))
+    && (record.remoteHead === undefined || record.remoteHead === null || /^[a-f0-9]{40,64}$/.test(record.remoteHead))
     && (record.kind !== "remote-branch" || (record.managedWorktree && record.remote.length > 0));
 }
 

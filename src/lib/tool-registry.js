@@ -14,8 +14,10 @@ export function registerEnabledTool(server, name, definition, handler) {
     server.registerTool(name, definition, handler);
     return true;
   }
-  const inputSchema = { ...(definition.inputSchema || {}), workspaceId: z.string().regex(/^ws_[a-f0-9]{16}$/) };
-  server.registerTool(name, { ...definition, inputSchema }, async (args = {}, extra) => {
+  const { strictInput = false, ...publicDefinition } = definition;
+  const inputShape = { ...(definition.inputSchema || {}), workspaceId: z.string().regex(/^ws_[a-f0-9]{16}$/) };
+  const inputSchema = strictInput ? z.object(inputShape).strict() : inputShape;
+  server.registerTool(name, { ...publicDefinition, inputSchema }, async (args = {}, extra) => {
     const { workspaceId, ...rest } = args;
     return withHostWorkspace(hostWorkspaceIndex, workspaceId, { mutating: definition.annotations?.readOnlyHint !== true }, () => handler(rest, extra));
   });

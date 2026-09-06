@@ -28,6 +28,20 @@ created. A verified remote-only branch gets a detached task-owned worktree at
 the exact commit, leaving local branch refs unchanged. Any head mismatch fails
 before a branch or worktree is created.
 
+When branch attachment includes `remote`, it requires one identical fetch/push
+destination and records a hash of that routing as the publish binding. After
+selective staging and a hook-enforced commit,
+`git_publish_attached_branch` accepts only `workspaceId`.
+It requires the recorded repository, remote configuration, requested branch,
+and expected remote head; requires local HEAD to be a fast-forward descendant;
+rechecks the remote; performs one normal non-force push of that exact commit to
+that exact branch; and requires exact remote SHA readback. Successful readback
+advances the stored expected remote head, permitting a later legitimate
+commit/publish cycle. A moved remote, switched branch, changed remote routing,
+plain directory, ordinary Git attachment, or branch attachment without a
+remote publish binding is refused. The tool cannot create a branch or PR and
+accepts no URL, branch, refspec, force, or PR argument.
+
 The selected directory is the exact authority root. A directory nested inside
 a larger Git checkout remains usable, but is treated as non-Git so attachment
 does not implicitly authorize its parent; attach the Git top level when Git
@@ -58,8 +72,10 @@ The short development loop is:
 4. Run focused and complete repository checks. Inspect unstaged state, stage
    exact paths, inspect the cached diff, and commit through the repository's
    actual configured hooks without bypass.
-5. Use normal `git`/`gh` through `repo_shell` for sync, non-force push, draft PR,
-   review and CI readback. Before an authorized merge, use:
+5. For an attached existing PR branch, use `git_publish_attached_branch` to
+   update that same branch without creating a replacement branch or PR. Use
+   normal `git`/`gh` through `repo_shell` for other sync, draft PR, review and
+   CI readback. Before an authorized merge, use:
 
        node scripts/guarded-gh-merge.mjs \
          --repo=OWNER/REPO --pr=NUMBER --expected-head=FULL_SHA
@@ -82,13 +98,17 @@ release installation and controlled restart. Stage the reviewed commit and its
 lockfile dependencies in a new owner-only release, render and lint the two
 LaunchAgent plists, preserve the active release and S6 artifacts, then restart
 only the owned server followed by the tunnel readiness barrier. Require
-loopback 401 refusal, authenticated `/readyz` reporting `daily-use-v2` and 32
+loopback 401 refusal, authenticated `/readyz` reporting `daily-use-v2` and 33
 tools, tunnel control-plane readiness, and a ChatGPT catalog refresh before use.
 
 For rollback, boot out only the candidate labels, bootstrap the preserved prior
 server and then its tunnel, refresh the prior catalog, and verify its historical
 readiness. Preserve candidate diagnostics, workspace metadata, coordinator
 data, credentials and Keychain access controls in either direction.
+
+Registry-only `workspace_detach`/`workspace_forget`, which would remove a
+locator without deleting user data, remains a non-blocking future hygiene
+enhancement and is not part of this catalog.
 
 ## Render-only native package
 

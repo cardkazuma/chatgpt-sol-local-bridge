@@ -11,9 +11,11 @@ test("host profile has a versioned truthful catalog while legacy remains exact",
   assert.deepEqual(contract.toolCatalogForProfile("legacy").map(({ name }) => name), [...contract.EXPECTED_TOOL_NAMES]);
   const host = contract.toolCatalogForProfile("host");
   assert.equal(contract.catalogVersionForProfile("host"), "daily-use-v2");
+  assert.equal(host.length, 33);
   assert.equal(host.some(({ name }) => name === "git_publish_branch"), false);
   assert.equal(host.some(({ name }) => name === "workspace_create"), true);
   assert.equal(host.some(({ name }) => name === "workspace_attach"), true);
+  assert.equal(host.some(({ name }) => name === "git_publish_attached_branch"), true);
   assert.equal(host.find(({ name }) => name === "repo_shell")?.mutating, true);
   assert.throws(() => contract.toolCatalogForProfile("unknown"), /profile/i);
 });
@@ -68,6 +70,7 @@ test("host public instructions disclose normal-user authority and non-exclusive 
   assert.match(value.text, /non-exclusive/);
   assert.match(value.text, /workspace ID/);
   assert.match(value.text, /Use workspace_attach for an existing directory in place or an exact existing branch at an expected head/);
+  assert.match(value.text, /git_publish_attached_branch/);
   assert.equal(value.shell.annotations.readOnlyHint, false);
   assert.match(value.shell.description, /normal-user host/);
 });

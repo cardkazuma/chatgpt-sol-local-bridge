@@ -56,13 +56,13 @@ export function registerWorkspace(server) {
 
   registerEnabledTool(server, "workspace_attach", {
     title: "Attach existing host workspace",
-    description: "Register an existing directory in place, or open an exact existing Git branch at an expected head. Reuses an existing branch worktree; an unmounted local branch gets one same-branch worktree, while a remote-only branch gets a detached exact-head worktree. Never creates or replaces a branch.",
+    description: "Register an existing directory in place, or open an exact existing Git branch at an expected head. Reuses an existing branch worktree; an unmounted local branch gets one same-branch worktree, while a remote-only branch gets a detached exact-head worktree. Never creates or replaces a branch. Supply an existing remote name to bind later structured publication to that exact remote branch.",
     inputSchema: {
       path: z.string().min(1).max(4_000).optional().describe("Directory mode: absolute or ~ path to an existing local directory"),
       repositoryPath: z.string().min(1).max(4_000).optional().describe("Branch mode: absolute or ~ path to an existing local Git repository"),
       branch: z.string().min(1).max(200).optional().describe("Branch mode: exact existing local or remote branch name"),
       expectedHead: z.string().regex(/^[a-fA-F0-9]{40,64}$/).optional().describe("Branch mode: reviewed full commit ID that must match"),
-      remote: z.string().min(1).max(101).optional().describe("Branch mode: optional Git remote name for exact remote-head verification"),
+      remote: z.string().min(1).max(101).optional().describe("Branch mode: optional Git remote name for exact verification and later same-branch structured publication"),
       objective: z.string().min(1).max(2_000), project: z.string().max(200).optional(),
       scope: z.array(z.string().max(500)).max(100).optional(),
     },
