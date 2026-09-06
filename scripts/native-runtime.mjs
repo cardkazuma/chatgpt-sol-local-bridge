@@ -41,8 +41,10 @@ if (action === "render") {
       if (action === "recover") { try { fs.unlinkSync(path.join(config.stateRoot, `${args.component}-recovery.json`)); } catch {} }
       const plist = path.join(process.env.HOME, "Library", "LaunchAgents", `${label}.plist`);
       if (!fs.existsSync(plist)) throw new Error(`LaunchAgent is not installed: ${label}`);
-      if (spawnSync("launchctl", ["print", `${domain}/${label}`], { stdio: "ignore" }).status !== 0) spawnSync("launchctl", ["bootstrap", domain, plist], { stdio: "inherit" });
-      const result = spawnSync("launchctl", ["kickstart", "-k", `${domain}/${label}`], { stdio: "inherit" });
+      const loaded = spawnSync("launchctl", ["print", `${domain}/${label}`], { stdio: "ignore" }).status === 0;
+      const result = loaded
+        ? spawnSync("launchctl", ["kickstart", "-k", `${domain}/${label}`], { stdio: "inherit" })
+        : spawnSync("launchctl", ["bootstrap", domain, plist], { stdio: "inherit" });
       if (result.status !== 0) process.exitCode = result.status;
     }
   }
