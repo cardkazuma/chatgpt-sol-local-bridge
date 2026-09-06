@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { createServer } from "node:net";
 
 test("native package renders valid non-installed LaunchAgents and a secret-free profile", async () => {
   const mod = await import("../../scripts/native-package.mjs");
@@ -37,12 +39,14 @@ test("native package renders valid non-installed LaunchAgents and a secret-free 
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-test("native runtime does not kickstart a job it just bootstrapped", () => {
+test("native runtime does not kickstart a job it just bootstrapped", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-runtime-start-"));
+  let server;
   try {
     const home = path.join(root, "home");
     const bin = path.join(root, "bin");
     const log = path.join(root, "launchctl.log");
+    const readyMarker = path.join(root, "server.ready");
     fs.mkdirSync(path.join(home, "Library", "LaunchAgents"), { recursive: true });
     fs.mkdirSync(bin);
     const launchctl = path.join(bin, "launchctl");
@@ -50,6 +54,7 @@ test("native runtime does not kickstart a job it just bootstrapped", () => {
       "#!/bin/sh",
       `printf '%s\\n' "$*" >> ${JSON.stringify(log)}`,
       "if [ \"$1\" = print ]; then exit 1; fi",
+      `case "$*" in *host.tunnel*) test -f ${JSON.stringify(readyMarker)} || exit 42 ;; esac`,
       "if [ \"$1\" = bootstrap ]; then exit 0; fi",
       "exit 0",
       "",
@@ -57,8 +62,18 @@ test("native runtime does not kickstart a job it just bootstrapped", () => {
     for (const label of ["com.cardkazuma.chatgpt-local-bridge.host.server", "com.cardkazuma.chatgpt-local-bridge.host.tunnel"]) {
       fs.writeFileSync(path.join(home, "Library", "LaunchAgents", `${label}.plist`), "fixture\n");
     }
+    const allocator = createServer();
+    allocator.listen(0, "127.0.0.1");
+    await once(allocator, "listening");
+    const port = allocator.address().port;
+    allocator.close();
+    await once(allocator, "close");
+    server = spawn(process.execPath, ["-e", `setTimeout(()=>{const fs=require('fs');const h=require('http').createServer((q,r)=>{r.setHeader('content-type','application/json');r.end(JSON.stringify({ready:true,catalogVersion:'daily-use-v1'}))});h.listen(${port},'127.0.0.1',()=>fs.writeFileSync(${JSON.stringify(readyMarker)},'ready'))},250)`], {
+      stdio: ["ignore", "ignore", "inherit"],
+    });
+    assert.equal(Number.isInteger(port), true);
     const config = path.join(root, "runtime.json");
-    fs.writeFileSync(config, JSON.stringify({ stateRoot: path.join(root, "state") }));
+    fs.writeFileSync(config, JSON.stringify({ stateRoot: path.join(root, "state"), port }));
     const runtime = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../../scripts/native-runtime.mjs");
     const result = spawnSync(process.execPath, [runtime, "start", `--config=${config}`], {
       encoding: "utf8", env: { ...process.env, HOME: home, PATH: `${bin}:/usr/bin:/bin` },
@@ -67,7 +82,29 @@ test("native runtime does not kickstart a job it just bootstrapped", () => {
     const commands = fs.readFileSync(log, "utf8").trim().split("\n");
     assert.equal(commands.filter((line) => line.startsWith("bootstrap ")).length, 2);
     assert.equal(commands.filter((line) => line.startsWith("kickstart ")).length, 0);
-  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  } finally {
+    server?.kill("SIGTERM");
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("native startup waits for daily-use server readiness before tunnel bootstrap", async () => {
+  const { waitForNativeServerReady } = await import("../../scripts/native-package.mjs");
+  const observations = [
+    { ready: false, reason: "connection refused" },
+    { ready: true, catalogVersion: "legacy-v1" },
+    { ready: true, catalogVersion: "daily-use-v1" },
+  ];
+  const delays = [];
+  const result = await waitForNativeServerReady({
+    probe: async () => observations.shift(),
+    delay: async (ms) => delays.push(ms),
+    now: (() => { let value = 0; return () => value += 100; })(),
+    timeoutMs: 5_000,
+    intervalMs: 50,
+  });
+  assert.deepEqual(result, { ready: true, catalogVersion: "daily-use-v1" });
+  assert.deepEqual(delays, [50, 50]);
 });
 
 test("native artifact verification pins platform, architecture, hash, and command version", async () => {

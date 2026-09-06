@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { nativeStatus, renderNativePackage, SERVER_LABEL, TUNNEL_LABEL, verifyNativeArtifact } from "./native-package.mjs";
+import { nativeStatus, renderNativePackage, SERVER_LABEL, TUNNEL_LABEL, verifyNativeArtifact, waitForNativeServerReady } from "./native-package.mjs";
 import { keychainUsabilityStatus } from "./s5-credential.mjs";
 
 const [action, ...raw] = process.argv.slice(2);
@@ -45,7 +45,10 @@ if (action === "render") {
       const result = loaded
         ? spawnSync("launchctl", ["kickstart", "-k", `${domain}/${label}`], { stdio: "inherit" })
         : spawnSync("launchctl", ["bootstrap", domain, plist], { stdio: "inherit" });
-      if (result.status !== 0) process.exitCode = result.status;
+      if (result.status !== 0) throw new Error(`launchctl failed for ${label}`);
+      if (action === "start" && label === SERVER_LABEL && labels.includes(TUNNEL_LABEL)) {
+        await waitForNativeServerReady({ probe: () => probeServer(config) });
+      }
     }
   }
 } else {
@@ -59,3 +62,12 @@ function labelFor(component) {
   throw new Error("recover component must be server or tunnel");
 }
 function readJson(file) { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; } }
+async function probeServer(config) {
+  const response = await fetch(`http://127.0.0.1:${config.port}/readyz`, { signal: AbortSignal.timeout(1_000) });
+  const value = await response.json();
+  return {
+    ready: response.ok && value.ready === true,
+    catalogVersion: value.catalogVersion,
+    reason: response.ok ? "catalog mismatch" : `HTTP ${response.status}`,
+  };
+}
