@@ -10,14 +10,21 @@ const recoveryFile = path.join(config.stateRoot, `${component}-recovery.json`);
 fs.mkdirSync(config.stateRoot, { recursive: true, mode: 0o700 });
 const prior = readRecovery();
 const now = Date.now();
-const attempts = prior && now - prior.windowStartedAt <= 600_000 ? prior.attempts : 0;
+const continuingWindow = prior
+  && Number.isFinite(prior.windowStartedAt)
+  && Number.isInteger(prior.attempts)
+  && prior.attempts >= 0
+  && now >= prior.windowStartedAt
+  && now - prior.windowStartedAt <= 600_000;
+const attempts = continuingWindow ? prior.attempts : 0;
+const windowStartedAt = continuingWindow ? prior.windowStartedAt : now;
 if (attempts >= 5) process.exit(0);
-writeRecovery({ version: 1, state: "STARTING", attempts: attempts + 1, windowStartedAt: prior?.windowStartedAt || now, updatedAt: new Date().toISOString() });
+writeRecovery({ version: 1, state: "STARTING", attempts: attempts + 1, windowStartedAt, updatedAt: new Date().toISOString() });
 const child = spawn(config.nodePath, [path.join(config.repoRoot, "scripts", "native-host-launcher.mjs"), component, configPath], { cwd: config.repoRoot, stdio: "inherit", shell: false });
 let stopping = false;
 for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { stopping = true; child.kill(signal); });
 child.once("error", (error) => {
-  writeRecovery({ version: 1, state: "DEGRADED", attempts: attempts + 1, windowStartedAt: prior?.windowStartedAt || now, reason: String(error.message).slice(0, 500), updatedAt: new Date().toISOString() });
+  writeRecovery({ version: 1, state: "DEGRADED", attempts: attempts + 1, windowStartedAt, reason: String(error.message).slice(0, 500), updatedAt: new Date().toISOString() });
   process.exitCode = attempts + 1 >= 5 ? 0 : 1;
 });
 child.once("exit", (code, signal) => {
@@ -26,7 +33,7 @@ child.once("exit", (code, signal) => {
     process.exitCode = 0;
     return;
   }
-  writeRecovery({ version: 1, state: attempts + 1 >= 5 ? "DEGRADED" : "RETRY", attempts: attempts + 1, windowStartedAt: prior?.windowStartedAt || now, reason: signal || `exit ${code}`, updatedAt: new Date().toISOString() });
+  writeRecovery({ version: 1, state: attempts + 1 >= 5 ? "DEGRADED" : "RETRY", attempts: attempts + 1, windowStartedAt, reason: signal || `exit ${code}`, updatedAt: new Date().toISOString() });
   process.exitCode = attempts + 1 >= 5 ? 0 : 1;
 });
 
