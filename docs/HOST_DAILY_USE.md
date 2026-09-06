@@ -1,9 +1,11 @@
-# Daily-use host profile — W1–W4 candidate
+# Daily-use host profile — native operations
 
 This is the implementation/runbook for approved Homelab Blueprint revision
-`daily-use-1`. It describes a candidate only: no LaunchAgent is installed or
-enabled, no live Bridge or tunnel is stopped or rebound, and W5/W6 acceptance
-has not occurred.
+`daily-use-1`. W1–W6 and first-use acceptance completed on 2026-09-06 with
+reviewed release `114d93cdaf84c1e4cdbd3e3ecf75742b89ce1a6c`. The native
+LaunchAgents are the active runtime; the stopped S6 runtime and retained
+artifacts remain the reviewed rollback path. Do not repeat installation or
+cutover commands as routine startup.
 
 ## Operating contract
 
