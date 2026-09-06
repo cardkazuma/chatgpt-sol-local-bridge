@@ -85,6 +85,27 @@ export async function boundedRecovery({ component, restart, maxAttempts = 5, win
   return { state: "DEGRADED", component, attempts, reason: String(last?.reason || "recovery failed").slice(0, 500) };
 }
 
+export async function waitForNativeServerReady({
+  probe, timeoutMs = 30_000, intervalMs = 100, delay = wait, now = Date.now,
+} = {}) {
+  if (typeof probe !== "function" || !Number.isFinite(timeoutMs) || timeoutMs <= 0 || !Number.isFinite(intervalMs) || intervalMs <= 0) {
+    throw new Error("native server readiness parameters are invalid");
+  }
+  const startedAt = now();
+  let lastReason = "server unavailable";
+  while (now() - startedAt <= timeoutMs) {
+    try {
+      const value = await probe();
+      if (value?.ready === true && value.catalogVersion === "daily-use-v1") return value;
+      lastReason = value?.reason || (value?.ready ? "catalog mismatch" : "server unavailable");
+    } catch (error) {
+      lastReason = String(error.message || error).slice(0, 300);
+    }
+    await delay(intervalMs);
+  }
+  throw new Error(`native server did not become daily-use ready: ${String(lastReason).slice(0, 300)}`);
+}
+
 export async function nativeStatus({ catalogProbe, tunnelProbe, keychainProbe = keychainStatus } = {}) {
   const serverValue = await catalogProbe();
   const tunnelValue = await tunnelProbe();
