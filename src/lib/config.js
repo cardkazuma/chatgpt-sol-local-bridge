@@ -12,7 +12,7 @@ const DEFAULT_STATE_DIR = BRIDGE_PROFILE === "host"
   : path.join(HOME, ".chatgpt-sol-local-bridge");
 
 export const APP_NAME = "chatgpt-sol-local-bridge";
-export const APP_VERSION = BRIDGE_PROFILE === "host" ? "1.2.0-daily-use.2" : "1.0.0-s1";
+export const APP_VERSION = BRIDGE_PROFILE === "host" ? "1.2.0-daily-use.3" : "1.0.0-s1";
 export const STATE_DIR = path.resolve(expandHome(process.env.BRIDGE_STATE_DIR || DEFAULT_STATE_DIR));
 export const STATE_FILE = path.join(STATE_DIR, "state.json");
 export const LOG_DIR = path.join(STATE_DIR, "logs");
@@ -60,6 +60,8 @@ export const TOOL_CATALOG_VERSION = catalogVersionForProfile(BRIDGE_PROFILE);
 export const PROFILE_TOOL_CATALOG = toolCatalogForProfile(BRIDGE_PROFILE);
 export const ENABLED_TOOLS = parseEnabledTools(process.env.ENABLED_TOOLS, BRIDGE_PROFILE);
 export const ENABLED_TOOL_NAMES = Object.freeze(PROFILE_TOOL_CATALOG.map(({ name }) => name).filter((name) => ENABLED_TOOLS.has(name)));
+export const HC01_GATE_C_COLLECTOR_ROOT = process.env.HC01_GATE_C_COLLECTOR_ROOT || "";
+export const HC01_GATE_C_CONTROLLER_CONFIG = process.env.HC01_GATE_C_CONTROLLER_CONFIG || "";
 
 if (HARDENED_CONTAINER && DESTRUCTIVE_APPROVAL_MODE !== "deny") {
   throw new Error("BRIDGE_HARDENED requires DESTRUCTIVE_APPROVAL_MODE=deny");

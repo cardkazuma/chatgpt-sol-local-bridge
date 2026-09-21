@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { EXPECTED_TOOL_NAMES, TOOL_CATALOG, parseEnabledTools } from "../../src/tool-contract.js";
+import { EXPECTED_TOOL_NAMES, HOST_TOOL_CATALOG, TOOL_CATALOG, catalogVersionForProfile, parseEnabledTools } from "../../src/tool-contract.js";
 
 const REQUIRED_S5 = [
   "bridge_instructions",
@@ -41,4 +41,11 @@ test("ENABLED_TOOLS can only reduce the reviewed catalog", () => {
   assert.throws(() => parseEnabledTools("health,health"), /duplicate/);
   assert.throws(() => parseEnabledTools(""), /at least one/);
   assert.deepEqual([...parseEnabledTools(undefined)], REQUIRED_S6);
+});
+
+test("the Gate-C collector is host-only and does not widen the legacy catalog", () => {
+  assert.equal(EXPECTED_TOOL_NAMES.includes("collect_hc01_gate_c_readonly_evidence"), false);
+  assert.equal(HOST_TOOL_CATALOG.filter(({ name }) => name === "collect_hc01_gate_c_readonly_evidence").length, 1);
+  assert.equal(catalogVersionForProfile("host"), "daily-use-v2");
+  assert.equal(HOST_TOOL_CATALOG.length, 34);
 });
