@@ -39,6 +39,8 @@ function fixture() {
 test("the fixed collector uses only the reviewed executable, arguments, and scrubbed environment", async () => {
   const item = fixture();
   const calls = [];
+  const priorEndpoint = process.env.HC01_GATE_C_OWNER_ENDPOINT;
+  process.env.HC01_GATE_C_OWNER_ENDPOINT = "http://127.0.0.1:4999";
   try {
     const result = await runHC01GateCCollector({
       collectorRoot: item.root, controllerConfig: item.config, execFileImpl: (executable, args, options, callback) => {
@@ -50,9 +52,15 @@ test("the fixed collector uses only the reviewed executable, arguments, and scru
     assert.equal(calls.length, 1);
     assert.equal(calls[0].executable, process.execPath);
     assert.deepEqual(calls[0].args, [path.join(item.root, "dist", "controller", "hc01_owner_evidence_cli.js"), "--config", item.config]);
+    assert.equal(Object.isFrozen(calls[0].args), true);
     assert.equal(calls[0].options.shell, false);
     assert.deepEqual(calls[0].options.env, { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" });
-  } finally { item.cleanup(); }
+    assert.equal(Object.hasOwn(calls[0].options.env, "HC01_GATE_C_OWNER_ENDPOINT"), false);
+  } finally {
+    item.cleanup();
+    if (priorEndpoint === undefined) delete process.env.HC01_GATE_C_OWNER_ENDPOINT;
+    else process.env.HC01_GATE_C_OWNER_ENDPOINT = priorEndpoint;
+  }
 });
 test("malformed, private, stderr-bearing, and caller-shaped output fail closed without returning child material", async () => {
   const item = fixture();

@@ -23,6 +23,10 @@ transport for an allowlisted sanitized receipt; it is not a general host,
 filesystem, shell, process, or Host Binding tool. Source publication does not
 activate it. Installation, the owned Bridge restart/catalog refresh, and one
 current-owner collection require the separate operational Card decision.
+The Bridge passes only the existing fixed controller config path; the AI
+collector derives its loopback owner-projection transport from that validated
+config. No owner endpoint, path, command, environment value, Host Binding
+identity, or Card window is supplied by the tool caller.
 
 Create one task-owned Git worktree with `workspace_create`, or register an
 explicitly selected existing Git or non-Git directory in place with
