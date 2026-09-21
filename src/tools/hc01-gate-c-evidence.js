@@ -20,7 +20,7 @@ const SOURCE_PROOF_KEYS = new Set([...SOURCE_KEYS, "initial_profile_registry_see
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const SUBJECT = /^[a-f0-9]{40}$/;
 const PRIVATE_MATERIAL = /-----BEGIN|bearer\s|authorization|password|credential|private[_ -]?key|private[_ -]?binding|secret|token|api[_ -]?key|\/private\/|\/Users\/|\/home\//i;
-const FIXED_COLLECTOR_ENV = Object.freeze({ PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" });
+const FIXED_COLLECTOR_ENV = Object.freeze({ PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", NODE_NO_WARNINGS: "1" });
 
 function refusal() {
   return new Error(HC01_GATE_C_FAILURE);

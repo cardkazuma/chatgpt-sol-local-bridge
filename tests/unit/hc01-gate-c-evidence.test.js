@@ -54,7 +54,7 @@ test("the fixed collector uses only the reviewed executable, arguments, and scru
     assert.deepEqual(calls[0].args, [path.join(item.root, "dist", "controller", "hc01_owner_evidence_cli.js"), "--config", item.config]);
     assert.equal(Object.isFrozen(calls[0].args), true);
     assert.equal(calls[0].options.shell, false);
-    assert.deepEqual(calls[0].options.env, { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" });
+    assert.deepEqual(calls[0].options.env, { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C", NODE_NO_WARNINGS: "1" });
     assert.equal(Object.hasOwn(calls[0].options.env, "HC01_GATE_C_OWNER_ENDPOINT"), false);
   } finally {
     item.cleanup();
