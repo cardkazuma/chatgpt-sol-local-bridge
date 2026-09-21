@@ -55,7 +55,7 @@ test("native host profile completes and resumes an isolated developer workflow",
   const tools = await client.listTools();
   assert.equal(tools.tools.some(({ name }) => name === "git_publish_branch"), false);
   const contextFree = new Set([
-    "bridge_instructions", "workspace_list", "workspace_create", "workspace_attach", "workspace_resume",
+    "bridge_instructions", "collect_hc01_gate_c_readonly_evidence", "workspace_list", "workspace_create", "workspace_attach", "workspace_resume",
     "workspace_status", "workspace_checkpoint", "workspace_recover", "health",
   ]);
   for (const tool of tools.tools) {

@@ -11,7 +11,8 @@ test("host profile has a versioned truthful catalog while legacy remains exact",
   assert.deepEqual(contract.toolCatalogForProfile("legacy").map(({ name }) => name), [...contract.EXPECTED_TOOL_NAMES]);
   const host = contract.toolCatalogForProfile("host");
   assert.equal(contract.catalogVersionForProfile("host"), "daily-use-v2");
-  assert.equal(host.length, 33);
+  assert.equal(host.length, 34);
+  assert.equal(host.filter(({ name }) => name === "collect_hc01_gate_c_readonly_evidence").length, 1);
   assert.equal(host.some(({ name }) => name === "git_publish_branch"), false);
   assert.equal(host.some(({ name }) => name === "workspace_create"), true);
   assert.equal(host.some(({ name }) => name === "workspace_attach"), true);

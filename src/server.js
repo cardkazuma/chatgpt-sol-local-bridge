@@ -31,6 +31,7 @@ import { registerPolicy } from "./tools/policy.js";
 import { registerProcess } from "./tools/process.js";
 import { registerProject } from "./tools/project.js";
 import { registerWorkspace } from "./tools/workspace.js";
+import { registerHC01GateCEvidence } from "./tools/hc01-gate-c-evidence.js";
 import { initializeS6Broker } from "./lib/s6-broker-client.js";
 
 // Control-plane and GitHub credential material, if inherited from an outer
@@ -74,6 +75,7 @@ export function createServer() {
   registerGit(server);
   registerProject(server);
   registerProcess(server);
+  registerHC01GateCEvidence(server);
   return server;
 }
 

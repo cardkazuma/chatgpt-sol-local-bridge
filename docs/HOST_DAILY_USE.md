@@ -16,6 +16,14 @@ Codex-style filesystem/network sandbox. Every file, Git, project, shell and
 process call carries a stable workspace ID. The index is a locator; resume
 refreshes actual Git state and points to repository instructions.
 
+`collect_hc01_gate_c_readonly_evidence` is the one context-free exception. It
+accepts exactly `{}`, has no workspace, and invokes only the reviewed
+release-relative AI Project Execution collector. It is fixed read-only
+transport for an allowlisted sanitized receipt; it is not a general host,
+filesystem, shell, process, or Host Binding tool. Source publication does not
+activate it. Installation, the owned Bridge restart/catalog refresh, and one
+current-owner collection require the separate operational Card decision.
+
 Create one task-owned Git worktree with `workspace_create`, or register an
 explicitly selected existing Git or non-Git directory in place with
 `workspace_attach`. Directory attachment accepts an absolute or `~` path and
@@ -98,7 +106,7 @@ release installation and controlled restart. Stage the reviewed commit and its
 lockfile dependencies in a new owner-only release, render and lint the two
 LaunchAgent plists, preserve the active release and S6 artifacts, then restart
 only the owned server followed by the tunnel readiness barrier. Require
-loopback 401 refusal, authenticated `/readyz` reporting `daily-use-v2` and 33
+loopback 401 refusal, authenticated `/readyz` reporting `daily-use-v2` and 34
 tools, tunnel control-plane readiness, and a ChatGPT catalog refresh before use.
 
 For rollback, boot out only the candidate labels, bootstrap the preserved prior

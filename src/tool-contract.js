@@ -65,6 +65,7 @@ export const TOOL_CATALOG = Object.freeze([
 
 export const HOST_TOOL_CATALOG = Object.freeze([
   { name: "bridge_instructions", family: "policy" },
+  { name: "collect_hc01_gate_c_readonly_evidence", family: "hc01-readonly", readOnly: true },
   { name: "workspace_list", family: "workspace" },
   { name: "workspace_create", family: "workspace", mutating: true },
   { name: "workspace_attach", family: "workspace", mutating: true },
