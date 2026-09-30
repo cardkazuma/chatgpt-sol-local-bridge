@@ -110,7 +110,7 @@ test("native startup waits for daily-use server readiness before tunnel bootstra
   assert.deepEqual(delays, [50, 50]);
 });
 
-test("native artifact verification pins Darwin architecture, hash, and command version", async () => {
+test("native artifact verification pins Darwin architecture, hash, version identity, and command flags", async () => {
   const {
     nativeTunnelArtifactFor,
     verifyNativeArtifactEvidence,
@@ -118,19 +118,15 @@ test("native artifact verification pins Darwin architecture, hash, and command v
     NATIVE_TUNNEL_ZIP_SHA256,
     NATIVE_TUNNEL_ARM64_SHA256,
     NATIVE_TUNNEL_ARM64_ZIP_SHA256,
+    NATIVE_TUNNEL_SEMVER,
+    NATIVE_TUNNEL_GIT_SHA,
     NATIVE_TUNNEL_VERSION,
   } = await import("../../scripts/native-package.mjs");
   assert.deepEqual(nativeTunnelArtifactFor({ platform: "darwin", arch: "x64" }), {
-    arch: "x86_64",
-    sha256: NATIVE_TUNNEL_SHA256,
-    zipSha256: NATIVE_TUNNEL_ZIP_SHA256,
-    version: NATIVE_TUNNEL_VERSION,
+    arch: "x86_64", sha256: NATIVE_TUNNEL_SHA256, zipSha256: NATIVE_TUNNEL_ZIP_SHA256, version: NATIVE_TUNNEL_VERSION,
   });
   assert.deepEqual(nativeTunnelArtifactFor({ platform: "darwin", arch: "arm64" }), {
-    arch: "arm64",
-    sha256: NATIVE_TUNNEL_ARM64_SHA256,
-    zipSha256: NATIVE_TUNNEL_ARM64_ZIP_SHA256,
-    version: NATIVE_TUNNEL_VERSION,
+    arch: "arm64", sha256: NATIVE_TUNNEL_ARM64_SHA256, zipSha256: NATIVE_TUNNEL_ARM64_ZIP_SHA256, version: NATIVE_TUNNEL_VERSION,
   });
   assert.equal(NATIVE_TUNNEL_ARM64_SHA256, "d6bdeb1489d6363a3247f267352edc16963d52d3247eb8a4e90355bae4a3ed74");
   assert.equal(NATIVE_TUNNEL_ARM64_ZIP_SHA256, "d16f22a8047f94b959b295713d86209e3c338df0a7f15afda6cea31bd7235dae");
@@ -140,23 +136,31 @@ test("native artifact verification pins Darwin architecture, hash, and command v
   const bytes = Buffer.from("synthetic artifact evidence");
   const crypto = await import("node:crypto");
   const syntheticHash = crypto.createHash("sha256").update(bytes).digest("hex");
-  assert.notEqual(syntheticHash, NATIVE_TUNNEL_SHA256);
-  assert.notEqual(syntheticHash, NATIVE_TUNNEL_ARM64_SHA256);
-  const helpOutput = `run version ${NATIVE_TUNNEL_VERSION} --control-plane.api-key --mcp.server-url --mcp.extra-headers --health.url-file`;
+  const helpOutput = "Usage of run:\n--control-plane.api-key --mcp.server-url --mcp.extra-headers --health.url-file";
+  const x64VersionOutput = `${NATIVE_TUNNEL_VERSION} (git sha: ${NATIVE_TUNNEL_GIT_SHA})`;
+  const arm64VersionOutput = `${NATIVE_TUNNEL_SEMVER} git sha: ${NATIVE_TUNNEL_GIT_SHA} go: go1.27.0 build flags: -trimpath -buildvcs=false flavor=runtime-cloudflared`;
 
-  for (const arch of ["x64", "arm64"]) {
-    assert.throws(() => verifyNativeArtifactEvidence({
-      binary: "/opt/pinned/tunnel-client", bytes, helpStatus: 0, helpOutput,
-      platform: "darwin", arch,
-    }), /hash mismatch/);
+  for (const [arch, versionOutput, expectedArch] of [["x64", x64VersionOutput, "x86_64"], ["arm64", arm64VersionOutput, "arm64"]]) {
     const result = verifyNativeArtifactEvidence({
-      binary: "/opt/pinned/tunnel-client", bytes, helpStatus: 0, helpOutput,
+      binary: "/opt/pinned/tunnel-client", bytes, versionStatus: 0, versionOutput, helpStatus: 0, helpOutput,
       platform: "darwin", arch, expectedSha256: syntheticHash,
     });
     assert.equal(result.sha256, syntheticHash);
-    assert.equal(result.arch, arch === "x64" ? "x86_64" : "arm64");
-    assert.match(result.version, /0\.0\.13\+4b5267f/);
+    assert.equal(result.arch, expectedArch);
+    assert.equal(result.version, NATIVE_TUNNEL_SEMVER);
+    assert.equal(result.gitSha, NATIVE_TUNNEL_GIT_SHA);
   }
+
+  assert.throws(() => verifyNativeArtifactEvidence({
+    binary: "/opt/pinned/tunnel-client", bytes, versionStatus: 0,
+    versionOutput: `0.0.13 git sha: ${"0".repeat(40)} flavor=runtime-cloudflared`,
+    helpStatus: 0, helpOutput, platform: "darwin", arch: "arm64", expectedSha256: syntheticHash,
+  }), /version compatibility/);
+  assert.throws(() => verifyNativeArtifactEvidence({
+    binary: "/opt/pinned/tunnel-client", bytes, versionStatus: 0,
+    versionOutput: `${NATIVE_TUNNEL_SEMVER} git sha: ${NATIVE_TUNNEL_GIT_SHA}`,
+    helpStatus: 0, helpOutput, platform: "darwin", arch: "arm64", expectedSha256: syntheticHash,
+  }), /build flavor mismatch/);
 });
 
 test("recovery stops after five attempts without replaying workspace commands", async () => {

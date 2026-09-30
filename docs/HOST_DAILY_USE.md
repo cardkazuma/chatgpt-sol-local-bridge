@@ -140,8 +140,12 @@ accepts only the exact Darwin artifact for the host architecture:
   `d16f22a8047f94b959b295713d86209e3c338df0a7f15afda6cea31bd7235dae`.
 
 The ARM64 values add machine compatibility without changing tunnel version,
-control-plane semantics, credential custody, or cutover authority. Do not
-substitute `latest` or another architecture.
+control-plane semantics, credential custody, or cutover authority. Artifact
+identity is verified from the pinned hash plus `--version` semantic version and
+Git SHA; the ARM64 runtime-cloudflared flavor is also required. `run --help` is
+used separately for required flag compatibility because the official ARM64
+runtime artifact does not emit the legacy `run version ...` prefix there.
+Do not substitute `latest` or another architecture.
 
 Render into an isolated staging directory; this command verifies the exact
 binary and required native flags before writing anything:
