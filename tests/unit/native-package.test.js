@@ -6,6 +6,9 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:net";
+import { fileURLToPath } from "node:url";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 test("native package renders valid non-installed LaunchAgents and a secret-free profile", async () => {
   const mod = await import("../../scripts/native-package.mjs");
@@ -13,13 +16,13 @@ test("native package renders valid non-installed LaunchAgents and a secret-free 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-package-"));
   try {
     const rendered = mod.renderNativePackage({
-      outputDir: root, repoRoot: path.resolve(path.dirname(new URL(import.meta.url).pathname), "../.."),
+      outputDir: root, repoRoot: repoRoot,
       nodePath: process.execPath, tunnelPath: "/opt/pinned/tunnel-client", tunnelId: "tunnel_fixture",
     });
     assert.equal(rendered.installed, false);
     assert.equal(rendered.files.length, 4);
-    assert.equal(fs.existsSync(path.join(path.resolve(path.dirname(new URL(import.meta.url).pathname), "../.."), "scripts", "native-supervisor.mjs")), true);
-    assert.equal(fs.existsSync(path.join(path.resolve(path.dirname(new URL(import.meta.url).pathname), "../.."), "scripts", "native-host-launcher.mjs")), true);
+    assert.equal(fs.existsSync(path.join(repoRoot, "scripts", "native-supervisor.mjs")), true);
+    assert.equal(fs.existsSync(path.join(repoRoot, "scripts", "native-host-launcher.mjs")), true);
     for (const plist of rendered.files.filter((file) => file.endsWith(".plist"))) {
       const content = fs.readFileSync(plist, "utf8");
       assert.match(content, /^<\?xml version="1\.0"/);
@@ -74,7 +77,7 @@ test("native runtime does not kickstart a job it just bootstrapped", async () =>
     assert.equal(Number.isInteger(port), true);
     const config = path.join(root, "runtime.json");
     fs.writeFileSync(config, JSON.stringify({ stateRoot: path.join(root, "state"), port }));
-    const runtime = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../../scripts/native-runtime.mjs");
+    const runtime = path.join(repoRoot, "scripts", "native-runtime.mjs");
     const result = spawnSync(process.execPath, [runtime, "start", `--config=${config}`], {
       encoding: "utf8", env: { ...process.env, HOME: home, PATH: `${bin}:/usr/bin:/bin` },
     });
@@ -107,25 +110,53 @@ test("native startup waits for daily-use server readiness before tunnel bootstra
   assert.deepEqual(delays, [50, 50]);
 });
 
-test("native artifact verification pins platform, architecture, hash, and command version", async () => {
-  const { verifyNativeArtifactEvidence, NATIVE_TUNNEL_SHA256, NATIVE_TUNNEL_VERSION } = await import("../../scripts/native-package.mjs");
+test("native artifact verification pins Darwin architecture, hash, and command version", async () => {
+  const {
+    nativeTunnelArtifactFor,
+    verifyNativeArtifactEvidence,
+    NATIVE_TUNNEL_SHA256,
+    NATIVE_TUNNEL_ZIP_SHA256,
+    NATIVE_TUNNEL_ARM64_SHA256,
+    NATIVE_TUNNEL_ARM64_ZIP_SHA256,
+    NATIVE_TUNNEL_VERSION,
+  } = await import("../../scripts/native-package.mjs");
+  assert.deepEqual(nativeTunnelArtifactFor({ platform: "darwin", arch: "x64" }), {
+    arch: "x86_64",
+    sha256: NATIVE_TUNNEL_SHA256,
+    zipSha256: NATIVE_TUNNEL_ZIP_SHA256,
+    version: NATIVE_TUNNEL_VERSION,
+  });
+  assert.deepEqual(nativeTunnelArtifactFor({ platform: "darwin", arch: "arm64" }), {
+    arch: "arm64",
+    sha256: NATIVE_TUNNEL_ARM64_SHA256,
+    zipSha256: NATIVE_TUNNEL_ARM64_ZIP_SHA256,
+    version: NATIVE_TUNNEL_VERSION,
+  });
+  assert.equal(NATIVE_TUNNEL_ARM64_SHA256, "d6bdeb1489d6363a3247f267352edc16963d52d3247eb8a4e90355bae4a3ed74");
+  assert.equal(NATIVE_TUNNEL_ARM64_ZIP_SHA256, "d16f22a8047f94b959b295713d86209e3c338df0a7f15afda6cea31bd7235dae");
+  assert.throws(() => nativeTunnelArtifactFor({ platform: "linux", arch: "arm64" }), /requires Darwin/);
+  assert.throws(() => nativeTunnelArtifactFor({ platform: "darwin", arch: "ppc64" }), /requires Darwin/);
+
   const bytes = Buffer.from("synthetic artifact evidence");
   const crypto = await import("node:crypto");
   const syntheticHash = crypto.createHash("sha256").update(bytes).digest("hex");
   assert.notEqual(syntheticHash, NATIVE_TUNNEL_SHA256);
-  assert.throws(() => verifyNativeArtifactEvidence({
-    binary: "/opt/pinned/tunnel-client", bytes, helpStatus: 0,
-    helpOutput: `run version ${NATIVE_TUNNEL_VERSION} --control-plane.api-key --mcp.server-url --mcp.extra-headers --health.url-file`,
-    platform: "darwin", arch: "x64",
-  }), /hash mismatch/);
-  const result = verifyNativeArtifactEvidence({
-    binary: "/opt/pinned/tunnel-client", bytes, helpStatus: 0,
-    helpOutput: `run version ${NATIVE_TUNNEL_VERSION} --control-plane.api-key --mcp.server-url --mcp.extra-headers --health.url-file`,
-    platform: "darwin", arch: "x64",
-    expectedSha256: syntheticHash,
-  });
-  assert.equal(result.sha256, syntheticHash);
-  assert.match(result.version, /0\.0\.13\+4b5267f/);
+  assert.notEqual(syntheticHash, NATIVE_TUNNEL_ARM64_SHA256);
+  const helpOutput = `run version ${NATIVE_TUNNEL_VERSION} --control-plane.api-key --mcp.server-url --mcp.extra-headers --health.url-file`;
+
+  for (const arch of ["x64", "arm64"]) {
+    assert.throws(() => verifyNativeArtifactEvidence({
+      binary: "/opt/pinned/tunnel-client", bytes, helpStatus: 0, helpOutput,
+      platform: "darwin", arch,
+    }), /hash mismatch/);
+    const result = verifyNativeArtifactEvidence({
+      binary: "/opt/pinned/tunnel-client", bytes, helpStatus: 0, helpOutput,
+      platform: "darwin", arch, expectedSha256: syntheticHash,
+    });
+    assert.equal(result.sha256, syntheticHash);
+    assert.equal(result.arch, arch === "x64" ? "x86_64" : "arm64");
+    assert.match(result.version, /0\.0\.13\+4b5267f/);
+  }
 });
 
 test("recovery stops after five attempts without replaying workspace commands", async () => {
