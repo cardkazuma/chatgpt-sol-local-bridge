@@ -126,12 +126,26 @@ enhancement and is not part of this catalog.
 
 ## Render-only native package
 
-The selected native transport is `tunnel-client` 0.0.13 at commit
-`4b5267f823be0b046bb883aacb51603cfde3a0ea`, Darwin/x86_64 binary SHA-256
-`c5d1ab3ccf3aa402f631e2fac66c763fa0b1b82e6134e995c9a44bc6a06fb93c`
-from release ZIP SHA-256
-`c683e15d84fb997f5af1cc7c4cb55008e19a555a9ed2ec0f89a5ff426d85f85c`.
-Do not substitute `latest`.
+The selected native transport remains `tunnel-client` 0.0.13 at commit
+`4b5267f823be0b046bb883aacb51603cfde3a0ea`. The native package validator
+accepts only the exact Darwin artifact for the host architecture:
+
+- x86_64 binary SHA-256
+  `c5d1ab3ccf3aa402f631e2fac66c763fa0b1b82e6134e995c9a44bc6a06fb93c`,
+  from the historically accepted release ZIP SHA-256
+  `c683e15d84fb997f5af1cc7c4cb55008e19a555a9ed2ec0f89a5ff426d85f85c`;
+- arm64 binary SHA-256
+  `d6bdeb1489d6363a3247f267352edc16963d52d3247eb8a4e90355bae4a3ed74`,
+  from the official v0.0.13 Darwin arm64 release ZIP SHA-256
+  `d16f22a8047f94b959b295713d86209e3c338df0a7f15afda6cea31bd7235dae`.
+
+The ARM64 values add machine compatibility without changing tunnel version,
+control-plane semantics, credential custody, or cutover authority. Artifact
+identity is verified from the pinned hash plus `--version` semantic version and
+Git SHA; the ARM64 runtime-cloudflared flavor is also required. `run --help` is
+used separately for required flag compatibility because the official ARM64
+runtime artifact does not emit the legacy `run version ...` prefix there.
+Do not substitute `latest` or another architecture.
 
 Render into an isolated staging directory; this command verifies the exact
 binary and required native flags before writing anything:
@@ -208,10 +222,13 @@ change, paid dependency, web-first limitation or alternate mobile/Remote route.
 
 ## Current feasibility and limits
 
-Verified before W5 on 2026-09-06 from read-only/local probes: the Mac is Darwin
-x86_64; the
-cached binary and ZIP match the hashes above; `run`, `doctor` and `health`
-expose the required flags; the fixed Keychain item is present and readable
+Verified before W5 on 2026-09-06 from read-only/local probes: the original host
+was Darwin x86_64; its cached binary and ZIP match the x86_64 hashes above;
+`run`, `doctor` and `health` expose the required flags. For the 2026-10-01
+Mac mini migration, the official v0.0.13 arm64 release archive and contained
+Mach-O were independently hash-checked against the arm64 pins above on the
+legacy host; executable command/flag compatibility still requires native ARM64
+readback before installation/cutover. The fixed Keychain item is present and readable
 without an ACL change; Git, gh, Node, Python, SSH and Docker CLI are installed.
 No running ChatGPT desktop application was found in the local app inventory,
 and no live tunnel handshake was attempted by W1–W4. Subsequent W5 first-use

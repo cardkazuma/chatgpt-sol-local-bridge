@@ -6,44 +6,95 @@ import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { keychainStatus } from "./s5-credential.mjs";
 
-export const NATIVE_TUNNEL_VERSION = "0.0.13+4b5267f823be0b046bb883aacb51603cfde3a0ea";
+export const NATIVE_TUNNEL_SEMVER = "0.0.13";
+export const NATIVE_TUNNEL_GIT_SHA = "4b5267f823be0b046bb883aacb51603cfde3a0ea";
+export const NATIVE_TUNNEL_VERSION = `${NATIVE_TUNNEL_SEMVER}+${NATIVE_TUNNEL_GIT_SHA}`;
 export const NATIVE_TUNNEL_SHA256 = "c5d1ab3ccf3aa402f631e2fac66c763fa0b1b82e6134e995c9a44bc6a06fb93c";
 export const NATIVE_TUNNEL_ZIP_SHA256 = "c683e15d84fb997f5af1cc7c4cb55008e19a555a9ed2ec0f89a5ff426d85f85c";
+export const NATIVE_TUNNEL_ARM64_SHA256 = "d6bdeb1489d6363a3247f267352edc16963d52d3247eb8a4e90355bae4a3ed74";
+export const NATIVE_TUNNEL_ARM64_ZIP_SHA256 = "d16f22a8047f94b959b295713d86209e3c338df0a7f15afda6cea31bd7235dae";
+
+const NATIVE_TUNNEL_PINS = Object.freeze({
+  x86_64: Object.freeze({
+    arch: "x86_64",
+    sha256: NATIVE_TUNNEL_SHA256,
+    zipSha256: NATIVE_TUNNEL_ZIP_SHA256,
+    version: NATIVE_TUNNEL_VERSION,
+  }),
+  arm64: Object.freeze({
+    arch: "arm64",
+    sha256: NATIVE_TUNNEL_ARM64_SHA256,
+    zipSha256: NATIVE_TUNNEL_ARM64_ZIP_SHA256,
+    version: NATIVE_TUNNEL_VERSION,
+  }),
+});
 export const SERVER_LABEL = "com.cardkazuma.chatgpt-local-bridge.host.server";
 export const TUNNEL_LABEL = "com.cardkazuma.chatgpt-local-bridge.host.tunnel";
 export const NATIVE_DEVELOPER_PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
+export function nativeTunnelArtifactFor({ platform = process.platform, arch = process.arch } = {}) {
+  if (platform !== "darwin") throw new Error("pinned native tunnel artifact requires Darwin x86_64 or arm64");
+  const normalizedArch = ["x64", "x86_64"].includes(arch)
+    ? "x86_64"
+    : ["arm64", "aarch64"].includes(arch)
+      ? "arm64"
+      : "";
+  if (!normalizedArch) throw new Error("pinned native tunnel artifact requires Darwin x86_64 or arm64");
+  return NATIVE_TUNNEL_PINS[normalizedArch];
+}
+
 export function verifyNativeArtifact({ binary, platform = process.platform, arch = process.arch } = {}) {
-  if (platform !== "darwin" || !["x64", "x86_64"].includes(arch)) throw new Error("pinned native tunnel artifact requires Darwin x86_64");
+  const pin = nativeTunnelArtifactFor({ platform, arch });
   const resolved = path.resolve(String(binary || ""));
   const stat = fs.lstatSync(resolved);
   if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o111) === 0) throw new Error("native tunnel artifact must be an executable regular file");
+  const version = spawnSync(resolved, ["--version"], { encoding: "utf8", timeout: 15_000 });
   const help = spawnSync(resolved, ["run", "--help"], { encoding: "utf8", timeout: 15_000 });
   return verifyNativeArtifactEvidence({
     binary: resolved,
     bytes: fs.readFileSync(resolved),
+    versionStatus: version.status,
+    versionOutput: `${version.stdout || ""}\n${version.stderr || ""}`,
     helpStatus: help.status,
     helpOutput: `${help.stdout || ""}\n${help.stderr || ""}`,
     platform,
     arch,
+    expectedSha256: pin.sha256,
   });
 }
 
 export function verifyNativeArtifactEvidence({
-  binary, bytes, helpStatus, helpOutput, platform, arch,
-  expectedSha256 = NATIVE_TUNNEL_SHA256,
-  expectedVersion = NATIVE_TUNNEL_VERSION,
+  binary, bytes, versionStatus, versionOutput, helpStatus, helpOutput, platform, arch,
+  expectedSha256,
 } = {}) {
-  if (platform !== "darwin" || !["x64", "x86_64"].includes(arch)) throw new Error("pinned native tunnel artifact requires Darwin x86_64");
+  const pin = nativeTunnelArtifactFor({ platform, arch });
+  const requiredSha256 = expectedSha256 || pin.sha256;
   const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
-  if (sha256 !== expectedSha256) throw new Error("native tunnel artifact hash mismatch");
-  const output = String(helpOutput || "");
-  const version = output.match(/run version ([^\s]+)/)?.[1] || "";
-  if (helpStatus !== 0 || version !== expectedVersion) throw new Error("native tunnel command/version compatibility failed");
-  for (const flag of ["--control-plane.api-key", "--mcp.server-url", "--mcp.extra-headers", "--health.url-file"]) {
-    if (!output.includes(flag)) throw new Error(`native tunnel missing required flag ${flag}`);
+  if (sha256 !== requiredSha256) throw new Error("native tunnel artifact hash mismatch");
+
+  const identity = String(versionOutput || "").trim();
+  const semanticVersion = identity.match(/^(\d+\.\d+\.\d+)/)?.[1] || "";
+  const gitSha = identity.match(/git sha:\s*([a-f0-9]{40})/i)?.[1]?.toLowerCase() || "";
+  if (versionStatus !== 0 || semanticVersion !== NATIVE_TUNNEL_SEMVER || gitSha !== NATIVE_TUNNEL_GIT_SHA) {
+    throw new Error("native tunnel command/version compatibility failed");
   }
-  return { binary: path.resolve(String(binary || "")), sha256, version, platform: "darwin", arch: "x86_64" };
+  if (pin.arch === "arm64" && !/flavor=runtime-cloudflared(?:\s|$)/.test(identity)) {
+    throw new Error("native tunnel arm64 build flavor mismatch");
+  }
+
+  const help = String(helpOutput || "");
+  if (helpStatus !== 0) throw new Error("native tunnel run help failed");
+  for (const flag of ["--control-plane.api-key", "--mcp.server-url", "--mcp.extra-headers", "--health.url-file"]) {
+    if (!help.includes(flag)) throw new Error(`native tunnel missing required flag ${flag}`);
+  }
+  return {
+    binary: path.resolve(String(binary || "")),
+    sha256,
+    version: semanticVersion,
+    gitSha,
+    platform: "darwin",
+    arch: pin.arch,
+  };
 }
 
 export function renderNativePackage({ outputDir, repoRoot, nodePath, tunnelPath, tunnelId, port = 8765 } = {}) {
