@@ -157,6 +157,69 @@ export async function waitForNativeServerReady({
   throw new Error(`native server did not become daily-use ready: ${String(lastReason).slice(0, 300)}`);
 }
 
+export function nativeTunnelRuntimeEvidence({
+  healthStatus, healthBody, readyStatus, readyBody, metricsStatus, metricsBody,
+} = {}) {
+  const health = String(healthBody || "").trim();
+  if (healthStatus !== 200 || health !== "live") {
+    return { ready: false, reason: `tunnel health endpoint unavailable (HTTP ${healthStatus || 0})` };
+  }
+
+  const readiness = String(readyBody || "").trim();
+  if (readyStatus !== 200 || readiness !== "ready") {
+    const detail = readiness ? `: ${readiness.slice(0, 200)}` : "";
+    return { ready: false, reason: `tunnel readiness unavailable (HTTP ${readyStatus || 0})${detail}` };
+  }
+
+  if (metricsStatus !== 200) {
+    return { ready: false, reason: `tunnel metrics unavailable (HTTP ${metricsStatus || 0})` };
+  }
+  const pollLine = String(metricsBody || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("commands_poll_last_successful_timestamp_seconds"));
+  const match = pollLine?.match(/^commands_poll_last_successful_timestamp_seconds(?:\{[^}]*\})?\s+([0-9.eE+-]+)$/);
+  const controlPlanePollTimestampSeconds = Number(match?.[1] || 0);
+  if (!Number.isFinite(controlPlanePollTimestampSeconds) || controlPlanePollTimestampSeconds <= 0) {
+    return { ready: false, reason: "successful control-plane poll not observed" };
+  }
+  return { ready: true, reason: "ready", controlPlanePollTimestampSeconds };
+}
+
+export async function probeNativeTunnelRuntime({
+  baseUrl = "http://127.0.0.1:8080", fetchImpl = fetch, timeoutMs = 2_000,
+} = {}) {
+  if (typeof fetchImpl !== "function") throw new Error("native tunnel runtime probe requires fetch");
+  const read = async (pathname) => {
+    try {
+      const response = await fetchImpl(`${baseUrl}${pathname}`, { signal: AbortSignal.timeout(timeoutMs) });
+      return { status: response.status, body: await response.text() };
+    } catch (error) {
+      return { status: 0, body: "", error: String(error.message || error).slice(0, 300) };
+    }
+  };
+  const [health, ready, metrics] = await Promise.all([
+    read("/healthz"),
+    read("/readyz"),
+    read("/metrics"),
+  ]);
+  const result = nativeTunnelRuntimeEvidence({
+    healthStatus: health.status,
+    healthBody: health.body,
+    readyStatus: ready.status,
+    readyBody: ready.body,
+    metricsStatus: metrics.status,
+    metricsBody: metrics.body,
+  });
+  if (!result.ready) {
+    const transportError = health.error || ready.error || metrics.error;
+    if (transportError && /HTTP 0\)/.test(result.reason)) {
+      return { ...result, reason: `${result.reason}: ${transportError}` };
+    }
+  }
+  return result;
+}
+
 export async function nativeStatus({ catalogProbe, tunnelProbe, keychainProbe = keychainStatus } = {}) {
   const serverValue = await catalogProbe();
   const tunnelValue = await tunnelProbe();

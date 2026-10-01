@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { nativeStatus, renderNativePackage, SERVER_LABEL, TUNNEL_LABEL, verifyNativeArtifact, waitForNativeServerReady } from "./native-package.mjs";
+import { nativeStatus, probeNativeTunnelRuntime, renderNativePackage, SERVER_LABEL, TUNNEL_LABEL, verifyNativeArtifact, waitForNativeServerReady } from "./native-package.mjs";
 import { keychainUsabilityStatus } from "./s5-credential.mjs";
 
 const [action, ...raw] = process.argv.slice(2);
@@ -27,10 +27,7 @@ if (action === "render") {
           return { ready: response.ok && value.ready === true, catalogVersion: value.catalogVersion, reason: response.ok ? "catalog mismatch" : `HTTP ${response.status}` };
         } catch (error) { return { ready: false, reason: String(error.message).slice(0, 300) }; }
       },
-      tunnelProbe: async () => {
-        const result = spawnSync(config.tunnelPath, ["health", "--port", "8080", "--json", "--require-control-plane-poll"], { encoding: "utf8", timeout: 5_000 });
-        return { ready: result.status === 0, reason: result.status === 0 ? "ready" : "health/control-plane poll unavailable" };
-      },
+      tunnelProbe: () => probeNativeTunnelRuntime(),
       keychainProbe: keychainUsabilityStatus,
     });
     console.log(JSON.stringify({ installed: labels.every((label) => fs.existsSync(path.join(process.env.HOME, "Library", "LaunchAgents", `${label}.plist`))), loaded, components, recovery }, null, 2));

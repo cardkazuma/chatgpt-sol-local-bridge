@@ -163,6 +163,52 @@ test("native artifact verification pins Darwin architecture, hash, version ident
   }), /build flavor mismatch/);
 });
 
+test("native tunnel runtime status requires health, readiness, and a successful control-plane poll", async () => {
+  const { nativeTunnelRuntimeEvidence, probeNativeTunnelRuntime } = await import("../../scripts/native-package.mjs");
+  const metrics = [
+    "# HELP commands_poll_last_successful_timestamp_seconds Unix timestamp in seconds of the last successful poll.",
+    "commands_poll_last_successful_timestamp_seconds{otel_scope_name=\"controlplane\"} 1.790838873e+09",
+    "",
+  ].join("\n");
+  const evidence = nativeTunnelRuntimeEvidence({
+    healthStatus: 200,
+    healthBody: "live",
+    readyStatus: 200,
+    readyBody: "ready",
+    metricsStatus: 200,
+    metricsBody: metrics,
+  });
+  assert.equal(evidence.ready, true);
+  assert.equal(evidence.controlPlanePollTimestampSeconds, 1_790_838_873);
+
+  const missingPoll = nativeTunnelRuntimeEvidence({
+    healthStatus: 200,
+    healthBody: "live",
+    readyStatus: 200,
+    readyBody: "ready",
+    metricsStatus: 200,
+    metricsBody: "commands_poll_last_successful_timestamp_seconds 0\n",
+  });
+  assert.equal(missingPoll.ready, false);
+  assert.match(missingPoll.reason, /successful control-plane poll/);
+
+  const responses = new Map([
+    ["/healthz", { status: 200, body: "live" }],
+    ["/readyz", { status: 200, body: "ready" }],
+    ["/metrics", { status: 200, body: metrics }],
+  ]);
+  const result = await probeNativeTunnelRuntime({
+    baseUrl: "http://runtime.test",
+    fetchImpl: async (url) => {
+      const pathname = new URL(url).pathname;
+      const response = responses.get(pathname);
+      return { status: response.status, text: async () => response.body };
+    },
+  });
+  assert.equal(result.ready, true);
+  assert.equal(result.controlPlanePollTimestampSeconds, 1_790_838_873);
+});
+
 test("recovery stops after five attempts without replaying workspace commands", async () => {
   const { boundedRecovery } = await import("../../scripts/native-package.mjs");
   const calls = [];
