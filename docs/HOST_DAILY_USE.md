@@ -95,9 +95,10 @@ The short development loop is:
          --repo=OWNER/REPO --pr=NUMBER --expected-head=FULL_SHA
 
    This is a dry readiness check by default. `--execute` uses `gh pr merge
-   --match-head-commit`; moved heads, draft/closed PRs, absent approval and
-   non-successful checks refuse before merge. A repository with no CI needs an
-   explicit recorded disposition and `--allow-no-checks`.
+   --match-head-commit`; moved heads, draft/closed PRs and non-successful checks
+   refuse before merge. GitHub `APPROVED` review state is not a merge
+   prerequisite. A repository with no CI needs an explicit recorded disposition
+   and `--allow-no-checks`.
 
 Broad shell is inherently mutating and cannot be atomically classified. Inspect
 status/diff afterward and reread affected files before another derived edit.
@@ -194,7 +195,7 @@ procedure. Activation is complete; do not rerun the cutover steps as routine
 startup.
 
 Before activation, refresh both repositories and verify the implementation PR
-head/CI/review. Privately inventory the exact old Bridge/tunnel/relay/broker
+head/CI. Privately inventory the exact old Bridge/tunnel/relay/broker
 resources, current app catalog, existing workspace/coordinator state and owned
 processes. Preserve all old state. Re-verify the pinned binary and Keychain item
 without displaying values or changing access controls. Copy the reviewed source
