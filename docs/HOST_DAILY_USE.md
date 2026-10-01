@@ -181,8 +181,11 @@ Once W5 has installed the reviewed staged plists, the operator path is:
 
 Status reports installed/loaded components, Keychain usability and bounded
 recovery state separately. The Bridge `/readyz` owns profile/catalog truth;
-tunnel health must additionally require a successful control-plane poll during
-W5 acceptance.
+tunnel status probes the pinned runtime's loopback `/healthz`, `/readyz` and
+`/metrics` surfaces and additionally requires a non-zero
+`commands_poll_last_successful_timestamp_seconds`. This preserves the W5
+successful-control-plane-poll requirement without assuming the narrow
+`runtime-cloudflared` artifact exposes the full client's `health` command.
 
 ## Accepted W5 activation and rollback plan
 
@@ -224,11 +227,14 @@ change, paid dependency, web-first limitation or alternate mobile/Remote route.
 
 Verified before W5 on 2026-09-06 from read-only/local probes: the original host
 was Darwin x86_64; its cached binary and ZIP match the x86_64 hashes above;
-`run`, `doctor` and `health` expose the required flags. For the 2026-10-01
-Mac mini migration, the official v0.0.13 arm64 release archive and contained
-Mach-O were independently hash-checked against the arm64 pins above on the
-legacy host; executable command/flag compatibility still requires native ARM64
-readback before installation/cutover. The fixed Keychain item is present and readable
+`run`, `doctor` and `health` expose the required flags. The selected
+Darwin arm64 artifact is the narrow `runtime-cloudflared` flavor and exposes
+only `run`; its loopback health/readiness/metrics HTTP surfaces replace the
+full-client `health` CLI for native status. For the 2026-10-01 Mac mini
+migration, the official v0.0.13 arm64 release archive and contained Mach-O were
+independently hash-checked against the arm64 pins above on the legacy host;
+native execution, Bridge catalog calls and successful control-plane polling
+were then observed on the Mac mini. The fixed Keychain item is present and readable
 without an ACL change; Git, gh, Node, Python, SSH and Docker CLI are installed.
 No running ChatGPT desktop application was found in the local app inventory,
 and no live tunnel handshake was attempted by W1–W4. Subsequent W5 first-use
