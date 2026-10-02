@@ -236,7 +236,7 @@ migration, the official v0.0.13 arm64 release archive and contained Mach-O were
 independently hash-checked against the arm64 pins above on the legacy host;
 native execution, Bridge catalog calls and successful control-plane polling
 were then observed on the Mac mini. The fixed Keychain item is present and readable
-without an ACL change; Git, gh, Node, Python, SSH and Docker CLI are installed.
+without an ACL change; Git, gh, Node, Python and SSH are installed. Docker CLI is absent on the active Mac mini and is not required by the native `daily-use-v2` runtime.
 No running ChatGPT desktop application was found in the local app inventory,
 and no live tunnel handshake was attempted by W1–W4. Subsequent W5 first-use
 acceptance established Chrome macOS ordinary Chat, native ChatGPT on iPhone and
